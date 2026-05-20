@@ -1605,6 +1605,26 @@ public sealed class ReconnectController : MonoBehaviour
         }
     }
 
+    internal static bool ShouldRestoreGiveUpButtonForReconnectWindow()
+    {
+        ReconnectController controller = Instance;
+        if (controller == null || !controller.reconnectJoinWindowOpen || !NetworkServer.active)
+        {
+            return false;
+        }
+
+        try
+        {
+            return DungeonManager.Instance != null &&
+                DungeonManager.Instance.isRunStarted &&
+                DungeonManager.Instance.dungeonEnvironment.GetValueOrDefault("IsInDungeon", 0) != 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private void TrackClientHello()
     {
         if (!config.AutoSendHello || !NetworkClient.active || NetworkServer.active || clientHelloAccepted)

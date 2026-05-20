@@ -33,6 +33,7 @@ public static class ReconnectPatches
         ApplyPlayerSlotPatch(harmony);
         ApplyFloorEntryPatch(harmony);
         ApplySteamInvitationPatch(harmony);
+        ApplyPausePanelPatch(harmony);
         patchesApplied = true;
     }
 
@@ -130,6 +131,28 @@ public static class ReconnectPatches
         }
     }
 
+    private static void ApplyPausePanelPatch(Harmony harmony)
+    {
+        try
+        {
+            MethodInfo target = AccessTools.Method(typeof(UI_PausePanel), "OnOpened");
+            MethodInfo postfix = AccessTools.Method(typeof(ReconnectPatches), nameof(RestoreGiveUpButtonAfterPausePanelOpened));
+
+            if (target == null || postfix == null)
+            {
+                ReconnectLogger.Warning("Pause panel patch target was not found. Give up button may be hidden during reconnect join windows.");
+                return;
+            }
+
+            harmony.Patch(target, postfix: new HarmonyMethod(postfix));
+            ReconnectLogger.Info("Pause panel patch applied to UI_PausePanel.OnOpened().");
+        }
+        catch (Exception ex)
+        {
+            ReconnectLogger.Warning("Pause panel patch failed. Give up button may be hidden during reconnect join windows: " + ex);
+        }
+    }
+
     private static bool IsCmdSetDefaultPlayerDataUserCode(MethodInfo method)
     {
         if (method == null || !method.Name.StartsWith("UserCode_CmdSetDefaultPlayerData", StringComparison.Ordinal))
@@ -190,6 +213,21 @@ public static class ReconnectPatches
         }
 
         ReconnectController.NotifySteamLobbyEntered(arg0.lobby, "data-updated");
+    }
+
+    private static void RestoreGiveUpButtonAfterPausePanelOpened(UI_PausePanel __instance)
+    {
+        if (__instance == null || __instance.giveupButton == null)
+        {
+            return;
+        }
+
+        if (!ReconnectController.ShouldRestoreGiveUpButtonForReconnectWindow())
+        {
+            return;
+        }
+
+        __instance.giveupButton.SetActive(true);
     }
 
     private static bool IsActiveBackgroundInvite(SteamInvitation invitation, LobbyData lobby)
