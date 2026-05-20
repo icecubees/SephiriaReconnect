@@ -360,6 +360,7 @@ public sealed class ReconnectController : MonoBehaviour
             Destroy(uiCanvas.gameObject);
         }
 
+        DestroyIconSprites();
         uiCanvas = null;
         iconObject = null;
         iconImage = null;
@@ -378,6 +379,40 @@ public sealed class ReconnectController : MonoBehaviour
         gameStyleApplied = false;
         cachedHudMenu = null;
         lastHudVisible = false;
+    }
+
+    private void DestroyIconSprites()
+    {
+        HashSet<int> destroyedSprites = new HashSet<int>();
+        HashSet<int> destroyedTextures = new HashSet<int>();
+        DestroyIconSprite(iconSprite, destroyedSprites, destroyedTextures);
+        DestroyIconSprite(iconHoverSprite, destroyedSprites, destroyedTextures);
+        DestroyIconSprite(iconOfflineSprite, destroyedSprites, destroyedTextures);
+        DestroyIconSprite(iconDisabledSprite, destroyedSprites, destroyedTextures);
+    }
+
+    private static void DestroyIconSprite(Sprite sprite, HashSet<int> destroyedSprites, HashSet<int> destroyedTextures)
+    {
+        if (sprite == null)
+        {
+            return;
+        }
+
+        Texture2D texture = sprite.texture;
+        int spriteId = sprite.GetInstanceID();
+        if (destroyedSprites.Add(spriteId))
+        {
+            Destroy(sprite);
+        }
+
+        if (texture != null)
+        {
+            int textureId = texture.GetInstanceID();
+            if (destroyedTextures.Add(textureId))
+            {
+                Destroy(texture);
+            }
+        }
     }
 
     private void DestroyDuplicateUiCanvases()
