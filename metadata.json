@@ -1,0 +1,7 @@
+{
+  "modName": "SephiriaReconnect",
+  "modVersion": "0.1.0",
+  "modAuthor": "Codex",
+  "dllFile": "SephiriaReconnect.dll",
+  "entryClass": "SephiriaReconnect.ReconnectMod"
+}

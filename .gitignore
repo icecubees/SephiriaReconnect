@@ -1,0 +1,32 @@
+# Build output
+bin/
+obj/
+dist/
+release/
+
+# Runtime state
+logs/
+checkpoints/
+host_session.json
+last_session.json
+*.sav
+*.bak
+*.tmp
+
+# Local editor and OS files
+.vs/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+Thumbs.db
+Desktop.ini
+
+# Logs and diagnostics
+*.log
+*.dmp
+
+# NuGet
+packages/
+*.nupkg

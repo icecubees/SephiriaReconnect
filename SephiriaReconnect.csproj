@@ -1,0 +1,97 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <AssemblyName>SephiriaReconnect</AssemblyName>
+    <RootNamespace>SephiriaReconnect</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <OutputPath>dist\</OutputPath>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <SephiriaManagedDir Condition="'$(SephiriaManagedDir)' == '' and '$(SEPHIRIA_MANAGED_DIR)' != ''">$(SEPHIRIA_MANAGED_DIR)</SephiriaManagedDir>
+    <SephiriaManagedDir Condition="'$(SephiriaManagedDir)' == ''">E:\steam\steamapps\common\Sephiria\Sephiria_Data\Managed</SephiriaManagedDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="src\ReconnectMod.cs" />
+    <Compile Include="src\ReconnectController.cs" />
+    <Compile Include="src\ReconnectPatches.cs" />
+    <Compile Include="src\ReconnectModels.cs" />
+    <Compile Include="src\ReconnectLogger.cs" />
+    <Compile Include="src\ReconnectStore.cs" />
+    <Compile Include="src\ReconnectMessages.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Lib.Harmony" Version="2.3.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(SephiriaManagedDir)\Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine">
+      <HintPath>$(SephiriaManagedDir)\UnityEngine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(SephiriaManagedDir)\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UI">
+      <HintPath>$(SephiriaManagedDir)\UnityEngine.UI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UIModule">
+      <HintPath>$(SephiriaManagedDir)\UnityEngine.UIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.TextRenderingModule">
+      <HintPath>$(SephiriaManagedDir)\UnityEngine.TextRenderingModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.InputLegacyModule">
+      <HintPath>$(SephiriaManagedDir)\UnityEngine.InputLegacyModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.ImageConversionModule">
+      <HintPath>$(SephiriaManagedDir)\UnityEngine.ImageConversionModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Mirror">
+      <HintPath>$(SephiriaManagedDir)\Mirror.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Heathen.Steamworks">
+      <HintPath>$(SephiriaManagedDir)\Heathen.Steamworks.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Heathen.Core">
+      <HintPath>$(SephiriaManagedDir)\Heathen.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="com.rlabrecque.steamworks.net">
+      <HintPath>$(SephiriaManagedDir)\com.rlabrecque.steamworks.net.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Newtonsoft.Json">
+      <HintPath>$(SephiriaManagedDir)\Newtonsoft.Json.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <Target Name="CopyHarmonyRuntime" AfterTargets="Build">
+    <Copy SourceFiles="$(NuGetPackageRoot)lib.harmony\2.3.3\lib\net472\0Harmony.dll" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" />
+  </Target>
+
+  <Target Name="CopyAssets" AfterTargets="Build">
+    <ItemGroup>
+      <ReconnectAssetFiles Include="assets\**\*.*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(ReconnectAssetFiles)" DestinationFiles="@(ReconnectAssetFiles->'$(OutputPath)assets\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+  </Target>
+</Project>
