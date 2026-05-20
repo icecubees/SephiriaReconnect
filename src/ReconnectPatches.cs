@@ -1,4 +1,6 @@
 using HarmonyLib;
+using HeathenEngineering.SteamworksIntegration;
+using HeathenEngineering.SteamworksIntegration.API;
 using Mirror;
 using System;
 using System.Linq;
@@ -9,6 +11,12 @@ namespace SephiriaReconnect;
 
 public static class ReconnectPatches
 {
+    private static bool patchesApplied;
+    private static readonly FieldInfo SteamInvitationInvitePhaseField =
+        AccessTools.Field(typeof(SteamInvitation), "invitePhase");
+    private static readonly FieldInfo SteamInvitationBackgroundInvitedField =
+        AccessTools.Field(typeof(SteamInvitation), "backgroundInvited");
+
     public static void Apply(Harmony harmony)
     {
         if (harmony == null)
@@ -16,8 +24,21 @@ public static class ReconnectPatches
             return;
         }
 
+        if (patchesApplied)
+        {
+            ReconnectLogger.Info("Harmony patches already applied; skipping duplicate patch pass.");
+            return;
+        }
+
         ApplyPlayerSlotPatch(harmony);
         ApplyFloorEntryPatch(harmony);
+        ApplySteamInvitationPatch(harmony);
+        patchesApplied = true;
+    }
+
+    public static void ResetAppliedState()
+    {
+        patchesApplied = false;
     }
 
     private static void ApplyPlayerSlotPatch(Harmony harmony)
@@ -30,16 +51,16 @@ public static class ReconnectPatches
 
             if (target == null || prefix == null)
             {
-                Debug.LogWarning("[SephiriaReconnect] Player slot patch target was not found. UI and reconnect session logic will still load.");
+                ReconnectLogger.Warning("Player slot patch target was not found. UI and reconnect session logic will still load.");
                 return;
             }
 
             harmony.Patch(target, prefix: new HarmonyMethod(prefix));
-            Debug.Log("[SephiriaReconnect] Player slot patch applied to " + target.Name + ".");
+            ReconnectLogger.Info("Player slot patch applied to " + target.Name + ".");
         }
         catch (Exception ex)
         {
-            Debug.LogWarning("[SephiriaReconnect] Player slot patch failed. UI and reconnect session logic will still load: " + ex);
+            ReconnectLogger.Warning("Player slot patch failed. UI and reconnect session logic will still load: " + ex);
         }
     }
 
@@ -55,16 +76,57 @@ public static class ReconnectPatches
 
             if (target == null || postfix == null)
             {
-                Debug.LogWarning("[SephiriaReconnect] Floor entry patch target was not found. Automatic checkpoints will use manual actions only.");
+                ReconnectLogger.Warning("Floor entry patch target was not found. Automatic checkpoints will use manual actions only.");
                 return;
             }
 
             harmony.Patch(target, postfix: new HarmonyMethod(postfix));
-            Debug.Log("[SephiriaReconnect] Floor entry patch applied to DungeonManager.HandleStartFloorAfterSavingServerside().");
+            ReconnectLogger.Info("Floor entry patch applied to DungeonManager.HandleStartFloorAfterSavingServerside().");
         }
         catch (Exception ex)
         {
-            Debug.LogWarning("[SephiriaReconnect] Floor entry patch failed. Automatic checkpoints will use manual actions only: " + ex);
+            ReconnectLogger.Warning("Floor entry patch failed. Automatic checkpoints will still use manual actions only: " + ex);
+        }
+    }
+
+    private static void ApplySteamInvitationPatch(Harmony harmony)
+    {
+        try
+        {
+            MethodInfo enterTarget = AccessTools.Method(
+                typeof(SteamInvitation),
+                "HandleEnterSuccess",
+                new[] { typeof(LobbyData) });
+            MethodInfo enterPostfix = AccessTools.Method(typeof(ReconnectPatches), nameof(ConnectToReconnectHostAfterLobbyEnter));
+            MethodInfo dataTarget = AccessTools.Method(
+                typeof(SteamInvitation),
+                "HandleDataUpdated",
+                new[] { typeof(LobbyDataUpdateEventData) });
+            MethodInfo dataPostfix = AccessTools.Method(typeof(ReconnectPatches), nameof(ConnectToReconnectHostAfterLobbyDataUpdated));
+
+            if (enterTarget == null || enterPostfix == null)
+            {
+                ReconnectLogger.Warning("Steam invitation enter-success patch target was not found. Steam invite reconnect will rely on vanilla behavior.");
+            }
+            else
+            {
+                harmony.Patch(enterTarget, postfix: new HarmonyMethod(enterPostfix));
+                ReconnectLogger.Info("Steam invitation enter-success patch applied.");
+            }
+
+            if (dataTarget == null || dataPostfix == null)
+            {
+                ReconnectLogger.Warning("Steam invitation data-update patch target was not found. Reconnect invites may require entering the save first.");
+            }
+            else
+            {
+                harmony.Patch(dataTarget, postfix: new HarmonyMethod(dataPostfix));
+                ReconnectLogger.Info("Steam invitation data-update patch applied.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ReconnectLogger.Warning("Steam invitation patch failed. Steam invite reconnect will rely on vanilla behavior: " + ex);
         }
     }
 
@@ -106,12 +168,52 @@ public static class ReconnectPatches
 
         if (changed)
         {
-            Debug.Log("[SephiriaReconnect] Rebound reconnecting player " + steamID + " to reserved slot " + reservedSlot + " before Initialize().");
+            ReconnectLogger.Info("Rebound reconnecting player " + steamID + " to reserved slot " + reservedSlot + " before Initialize().");
         }
     }
 
     private static void NotifyFloorEntryAfterOriginalSave(bool allowSave, string floorGuid, bool runStarted)
     {
         ReconnectController.NotifyFloorEntryCheckpointCandidate(allowSave, floorGuid, runStarted);
+    }
+
+    private static void ConnectToReconnectHostAfterLobbyEnter(LobbyData arg0)
+    {
+        ReconnectController.NotifySteamLobbyEntered(arg0, "enter-success");
+    }
+
+    private static void ConnectToReconnectHostAfterLobbyDataUpdated(SteamInvitation __instance, LobbyDataUpdateEventData arg0)
+    {
+        if (!IsActiveBackgroundInvite(__instance, arg0.lobby))
+        {
+            return;
+        }
+
+        ReconnectController.NotifySteamLobbyEntered(arg0.lobby, "data-updated");
+    }
+
+    private static bool IsActiveBackgroundInvite(SteamInvitation invitation, LobbyData lobby)
+    {
+        try
+        {
+            if (invitation == null || SteamInvitationInvitePhaseField == null || SteamInvitationBackgroundInvitedField == null)
+            {
+                return false;
+            }
+
+            int invitePhase = (int)SteamInvitationInvitePhaseField.GetValue(invitation);
+            if (invitePhase != 1)
+            {
+                return false;
+            }
+
+            object value = SteamInvitationBackgroundInvitedField.GetValue(invitation);
+            return value is LobbyData backgroundInvited && backgroundInvited == lobby;
+        }
+        catch (Exception ex)
+        {
+            ReconnectLogger.Warning("Failed to inspect Steam invitation background invite state: " + ex.Message);
+            return false;
+        }
     }
 }

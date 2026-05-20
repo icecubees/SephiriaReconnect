@@ -33,6 +33,7 @@ public sealed class ReconnectMod : HorayModBase
         if (harmony != null)
         {
             harmony.UnpatchAll(HarmonyId);
+            ReconnectPatches.ResetAppliedState();
             harmony = null;
         }
 

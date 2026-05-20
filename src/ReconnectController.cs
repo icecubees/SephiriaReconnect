@@ -61,8 +61,10 @@ public sealed class ReconnectController : MonoBehaviour
     private bool clientHelloAccepted;
     private bool wasServerActive;
     private bool serverEventsAttached;
-    private bool messageHandlersRegistered;
+    private bool serverMessageHandlerRegistered;
+    private bool clientMessageHandlerRegistered;
     private bool wasClientActive;
+    private readonly Dictionary<int, ulong> connectionSteamIds = new Dictionary<int, ulong>();
     private string lastObservedFloorGuid = "";
     private string statusLine = "正在初始化。";
     private LobbySettingsSnapshot pendingLobbySettings;
@@ -70,6 +72,8 @@ public sealed class ReconnectController : MonoBehaviour
     private bool reconnectJoinWindowOpen;
     private bool reconnectPreviousAllowConnection;
     private bool reconnectPreviousAccessDenyInDungeon;
+    private static ulong lastReconnectLobbyConnectAttemptId;
+    private static float lastReconnectLobbyConnectAttemptAt;
     private static readonly Vector3[] ScreenRectCorners = new Vector3[4];
     private static readonly MethodInfo DungeonSaveCurrentSessionDataMethod =
         typeof(DungeonManager).GetMethod("SaveCurrentSessionData", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -78,7 +82,7 @@ public sealed class ReconnectController : MonoBehaviour
     {
         if (Instance != null && !ReferenceEquals(Instance, this))
         {
-            Debug.LogWarning("[SephiriaReconnect] Duplicate controller detected, destroying the new instance.");
+            ReconnectLogger.Warning("Duplicate controller detected, destroying the new instance.");
             Destroy(gameObject);
             return;
         }
@@ -1014,7 +1018,7 @@ public sealed class ReconnectController : MonoBehaviour
         }
         catch (Exception ex)
         {
-            Debug.LogWarning("[SephiriaReconnect] Failed to load icon asset " + fileName + ": " + ex.Message);
+            ReconnectLogger.Warning("Failed to load icon asset " + fileName + ": " + ex.Message);
             return null;
         }
     }
@@ -1147,6 +1151,7 @@ public sealed class ReconnectController : MonoBehaviour
     private void OpenSteamReconnectInvite()
     {
         LobbyInfo lobby = GetLobbyInfo();
+        ReconnectLogger.Info("Invite requested. " + DescribeLobby(lobby) + " hostSession=" + (hostSession != null) + " members=" + (hostSession?.Members?.Count ?? 0));
         if (NetworkServer.active)
         {
             OpenReconnectJoinWindow("invite");
@@ -1158,6 +1163,7 @@ public sealed class ReconnectController : MonoBehaviour
             {
                 try
                 {
+                    ReconnectLogger.Info("No Steam lobby found; creating lobby before invite. " + DescribeLobby(lobby));
                     lobby.Manager.Create();
                     StartCoroutine(OpenSteamReconnectInviteWhenLobbyReady());
                     statusLine = "正在创建 Steam 房间，随后打开邀请窗口。";
@@ -1166,12 +1172,13 @@ public sealed class ReconnectController : MonoBehaviour
                 catch (Exception ex)
                 {
                     statusLine = "创建 Steam 房间失败：" + ex.Message;
-                    Debug.LogError("[SephiriaReconnect] Create lobby for invite failed: " + ex);
+                    ReconnectLogger.Error("Create lobby for invite failed: " + ex);
                 }
                 return;
             }
 
             statusLine = "当前没有可邀请的 Steam 房间。";
+            ReconnectLogger.Warning("Invite aborted because no Steam lobby is available. " + DescribeLobby(lobby));
             return;
         }
 
@@ -1187,6 +1194,7 @@ public sealed class ReconnectController : MonoBehaviour
             LobbyInfo lobby = GetLobbyInfo();
             if (lobby.HasLobby && lobby.LobbyId != 0)
             {
+                ReconnectLogger.Info("Created Steam lobby is ready for invite. " + DescribeLobby(lobby));
                 ApplyLobbySettingsSnapshot(lobby);
                 OpenSteamInviteForLobby(lobby.LobbyId);
                 yield break;
@@ -1196,6 +1204,7 @@ public sealed class ReconnectController : MonoBehaviour
         }
 
         statusLine = "创建 Steam 房间超时，无法打开邀请窗口。";
+        ReconnectLogger.Warning("Timed out waiting for Steam lobby before invite.");
         ShowSystemMessage(statusLine);
     }
 
@@ -1207,12 +1216,13 @@ public sealed class ReconnectController : MonoBehaviour
             int sent = InviteRecordedDisconnectedPlayers(lobbyId);
             SteamFriends.ActivateGameOverlayInviteDialog(new CSteamID(lobbyId));
             statusLine = sent > 0 ? "已向历史掉线成员发送 Steam 邀请，并打开邀请窗口。" : "已打开 Steam 邀请窗口；没有可自动定向邀请的掉线成员。";
+            ReconnectLogger.Info("Steam invite overlay opened. lobby=" + lobbyId + " targetedInvites=" + sent);
             ShowSystemMessage(statusLine);
         }
         catch (Exception ex)
         {
             statusLine = "打开 Steam 邀请窗口失败：" + ex.Message;
-            Debug.LogError("[SephiriaReconnect] Open invite dialog failed: " + ex);
+            ReconnectLogger.Error("Open invite dialog failed: " + ex);
         }
     }
 
@@ -1220,6 +1230,7 @@ public sealed class ReconnectController : MonoBehaviour
     {
         if (hostSession == null || lobbyId == 0)
         {
+            ReconnectLogger.Info("No recorded member invite targets. hostSession=" + (hostSession != null) + " lobby=" + lobbyId);
             return 0;
         }
 
@@ -1234,6 +1245,7 @@ public sealed class ReconnectController : MonoBehaviour
 
             if (member.State != ReconnectMemberState.OfflineReserved && member.State != ReconnectMemberState.ReconnectPending)
             {
+                ReconnectLogger.Info("Skipped invite target because member is not reserved. " + DescribeMember(member));
                 continue;
             }
 
@@ -1243,11 +1255,16 @@ public sealed class ReconnectController : MonoBehaviour
                 {
                     sent++;
                     member.State = ReconnectMemberState.ReconnectPending;
+                    ReconnectLogger.Info("Sent targeted Steam invite. " + DescribeMember(member) + " lobby=" + lobbyId);
+                }
+                else
+                {
+                    ReconnectLogger.Warning("Steam InviteUserToGame returned false. " + DescribeMember(member) + " lobby=" + lobbyId);
                 }
             }
             catch (Exception ex)
             {
-                Debug.LogWarning("[SephiriaReconnect] Failed to invite " + member.SteamId + ": " + ex.Message);
+                ReconnectLogger.Warning("Failed to invite " + member.SteamId + ": " + ex.Message);
             }
         }
 
@@ -1271,7 +1288,25 @@ public sealed class ReconnectController : MonoBehaviour
 
     private void RegisterMessageHandlers()
     {
-        if (messageHandlersRegistered)
+        RegisterServerMessageHandlers();
+        RegisterClientMessageHandlers();
+    }
+
+    private void UnregisterMessageHandlers()
+    {
+        UnregisterServerMessageHandlers();
+        UnregisterClientMessageHandlers();
+    }
+
+    private void RegisterServerMessageHandlers()
+    {
+        if (!NetworkServer.active)
+        {
+            serverMessageHandlerRegistered = false;
+            return;
+        }
+
+        if (serverMessageHandlerRegistered)
         {
             return;
         }
@@ -1279,19 +1314,43 @@ public sealed class ReconnectController : MonoBehaviour
         try
         {
             NetworkServer.RegisterHandler<ReconnectHelloMessage>(HandleServerHello, false);
-            NetworkClient.RegisterHandler<ReconnectHelloReplyMessage>(HandleClientHelloReply, false);
-            messageHandlersRegistered = true;
-            Debug.Log("[SephiriaReconnect] Mirror message handlers registered.");
+            serverMessageHandlerRegistered = true;
+            ReconnectLogger.Info("Mirror server hello handler registered.");
         }
         catch (Exception ex)
         {
-            Debug.LogWarning("[SephiriaReconnect] Message handler registration delayed: " + ex.Message);
+            ReconnectLogger.Warning("Server hello handler registration delayed: " + ex.Message);
         }
     }
 
-    private void UnregisterMessageHandlers()
+    private void RegisterClientMessageHandlers()
     {
-        if (!messageHandlersRegistered)
+        if (!NetworkClient.active)
+        {
+            clientMessageHandlerRegistered = false;
+            return;
+        }
+
+        if (clientMessageHandlerRegistered)
+        {
+            return;
+        }
+
+        try
+        {
+            NetworkClient.RegisterHandler<ReconnectHelloReplyMessage>(HandleClientHelloReply, false);
+            clientMessageHandlerRegistered = true;
+            ReconnectLogger.Info("Mirror client hello-reply handler registered.");
+        }
+        catch (Exception ex)
+        {
+            ReconnectLogger.Warning("Client hello-reply handler registration delayed: " + ex.Message);
+        }
+    }
+
+    private void UnregisterServerMessageHandlers()
+    {
+        if (!serverMessageHandlerRegistered)
         {
             return;
         }
@@ -1299,14 +1358,32 @@ public sealed class ReconnectController : MonoBehaviour
         try
         {
             NetworkServer.UnregisterHandler<ReconnectHelloMessage>();
+        }
+        catch (Exception ex)
+        {
+            ReconnectLogger.Warning("Failed to unregister server hello handler: " + ex.Message);
+        }
+
+        serverMessageHandlerRegistered = false;
+    }
+
+    private void UnregisterClientMessageHandlers()
+    {
+        if (!clientMessageHandlerRegistered)
+        {
+            return;
+        }
+
+        try
+        {
             NetworkClient.UnregisterHandler<ReconnectHelloReplyMessage>();
         }
         catch (Exception ex)
         {
-            Debug.LogWarning("[SephiriaReconnect] Failed to unregister handlers: " + ex.Message);
+            ReconnectLogger.Warning("Failed to unregister client hello-reply handler: " + ex.Message);
         }
 
-        messageHandlersRegistered = false;
+        clientMessageHandlerRegistered = false;
     }
 
     private void AttachServerEvents()
@@ -1341,6 +1418,7 @@ public sealed class ReconnectController : MonoBehaviour
         if (wasClientActive && !clientActive)
         {
             statusLine = "客户端已断开，已保留上次会话信息。";
+            ReconnectLogger.Warning("Client disconnected. lastSession=" + (lastSession != null) + " lobby=" + (lastSession?.LobbyId ?? 0) + " session=" + Short(lastSession?.SessionId));
             if (lastSession != null)
             {
                 lastSession.LastSeenUtc = DateTime.UtcNow;
@@ -1352,7 +1430,9 @@ public sealed class ReconnectController : MonoBehaviour
         {
             autoHelloAttempts = 0;
             clientHelloAccepted = false;
+            clientMessageHandlerRegistered = false;
             nextHelloAt = 0f;
+            ReconnectLogger.Info("Client connection became active; reset hello attempts.");
         }
 
         wasClientActive = clientActive;
@@ -1363,8 +1443,11 @@ public sealed class ReconnectController : MonoBehaviour
         bool serverActive = NetworkServer.active;
         if (wasServerActive && !serverActive)
         {
+            ReconnectLogger.Warning("Server stopped. Clearing host runtime timers. hostSession=" + (hostSession != null) + " lobby=" + (hostSession?.LobbyId ?? 0));
             lastObservedFloorGuid = "";
             lastPublishedLobbyState = "";
+            connectionSteamIds.Clear();
+            serverMessageHandlerRegistered = false;
             nextHostSessionRefreshAt = 0f;
             nextHostPlayerRefreshAt = 0f;
             nextHostLobbyRefreshAt = 0f;
@@ -1433,6 +1516,7 @@ public sealed class ReconnectController : MonoBehaviour
             reconnectPreviousAllowConnection = HorayNetworkAuthenticator.allowConnection;
             reconnectPreviousAccessDenyInDungeon = HorayNetworkAuthenticator.AccessDeny_InDungeon;
             reconnectJoinWindowOpen = true;
+            ReconnectLogger.Info("Reconnect join window state captured. prevAllow=" + reconnectPreviousAllowConnection + " prevDenyInDungeon=" + reconnectPreviousAccessDenyInDungeon);
         }
 
         HorayNetworkAuthenticator.allowConnection = true;
@@ -1442,7 +1526,7 @@ public sealed class ReconnectController : MonoBehaviour
         if (until > reconnectConnectionOpenUntil)
         {
             reconnectConnectionOpenUntil = until;
-            Debug.Log("[SephiriaReconnect] Opened reconnect join window for " + seconds + "s: " + reason);
+            ReconnectLogger.Info("Opened reconnect join window for " + seconds + "s: " + reason + " allowConnection=" + HorayNetworkAuthenticator.allowConnection + " denyInDungeon=" + HorayNetworkAuthenticator.AccessDeny_InDungeon);
         }
     }
 
@@ -1477,7 +1561,7 @@ public sealed class ReconnectController : MonoBehaviour
         reconnectJoinWindowOpen = false;
         reconnectConnectionOpenUntil = 0f;
         RestoreLobbyJoinableAfterReconnectWindow();
-        Debug.Log("[SephiriaReconnect] Closed reconnect join window.");
+        ReconnectLogger.Info("Closed reconnect join window. allowConnection=" + HorayNetworkAuthenticator.allowConnection + " denyInDungeon=" + HorayNetworkAuthenticator.AccessDeny_InDungeon);
     }
 
     private void ResetReconnectJoinWindowState()
@@ -1499,11 +1583,12 @@ public sealed class ReconnectController : MonoBehaviour
             if (lobby.HasLobby && lobby.Manager != null)
             {
                 lobby.Manager.SetJoinable(makeJoinable: false);
+                ReconnectLogger.Info("Restored Steam lobby joinable=false after reconnect window. " + DescribeLobby(lobby));
             }
         }
         catch (Exception ex)
         {
-            Debug.LogWarning("[SephiriaReconnect] Failed to restore Steam lobby joinable state: " + ex.Message);
+            ReconnectLogger.Warning("Failed to restore Steam lobby joinable state: " + ex.Message);
         }
     }
 
@@ -1527,6 +1612,11 @@ public sealed class ReconnectController : MonoBehaviour
             return;
         }
 
+        if (!ShouldAttemptReconnectHello())
+        {
+            return;
+        }
+
         if (Time.unscaledTime >= nextHelloAt)
         {
             if (autoHelloAttempts >= Mathf.Max(1, config.MaxAutoHelloAttempts))
@@ -1536,7 +1626,8 @@ public sealed class ReconnectController : MonoBehaviour
 
             nextHelloAt = Time.unscaledTime + Mathf.Max(5, config.ClientHelloIntervalSeconds);
             autoHelloAttempts++;
-            SendHello(reconnectAttempt: ShouldAttemptReconnectHello());
+            ReconnectLogger.Info("Auto hello attempt " + autoHelloAttempts + "/" + Mathf.Max(1, config.MaxAutoHelloAttempts) + ".");
+            SendHello(reconnectAttempt: true);
         }
     }
 
@@ -1572,6 +1663,7 @@ public sealed class ReconnectController : MonoBehaviour
         {
             if (changedSaveOrRun)
             {
+                ReconnectLogger.Info("Save slot or run changed; deleting ended session checkpoints. oldSave=" + NullToDash(hostSession?.SaveSlotId) + " oldRun=" + NullToDash(hostSession?.RunId) + " newSave=" + saveSlot + " newRun=" + runId);
                 DeleteEndedSessionCheckpoints();
             }
 
@@ -1586,6 +1678,7 @@ public sealed class ReconnectController : MonoBehaviour
                 UpdatedUtc = DateTime.UtcNow
             };
             statusLine = "已创建房主重连会话。";
+            ReconnectLogger.Info("Created host reconnect session. host=" + hostSession.HostSteamId + " lobby=" + hostSession.LobbyId + " session=" + Short(hostSession.SessionId) + " save=" + hostSession.SaveSlotId + " run=" + hostSession.RunId + " changedHost=" + changedHost);
             SaveHostSession();
         }
         else
@@ -1613,12 +1706,14 @@ public sealed class ReconnectController : MonoBehaviour
         {
             foreach (ReconnectCheckpointRecord checkpoint in hostSession.Checkpoints.Where(c => c != null).ToList())
             {
+                ReconnectLogger.Info("Deleting session checkpoint. " + DescribeCheckpoint(checkpoint));
                 store.DeleteCheckpointFiles(checkpoint);
             }
         }
 
         foreach (string checkpointId in store.EnumerateCheckpointIds().Distinct().ToList())
         {
+            ReconnectLogger.Info("Deleting orphan/ended checkpoint files. id=" + checkpointId);
             store.DeleteCheckpointFiles(checkpointId);
         }
     }
@@ -1638,6 +1733,9 @@ public sealed class ReconnectController : MonoBehaviour
             }
 
             ReconnectMemberRecord member = GetOrCreateMember(spawner.steamID);
+            RememberConnectionSteamId(spawner);
+            ReconnectMemberState previousState = member.State;
+            int previousSlot = member.PlayerSlot;
             member.PlayerName = SafePlayerName(spawner);
             if (member.PlayerSlot < 0)
             {
@@ -1656,6 +1754,11 @@ public sealed class ReconnectController : MonoBehaviour
             else if (member.State != ReconnectMemberState.Removed && member.State != ReconnectMemberState.ExitedGracefully)
             {
                 member.State = ReconnectMemberState.Online;
+            }
+
+            if (previousState != member.State || previousSlot != member.PlayerSlot)
+            {
+                ReconnectLogger.Info("Player spawner refreshed member. oldState=" + previousState + " oldSlot=" + previousSlot + " " + DescribeMember(member));
             }
         }
     }
@@ -1685,6 +1788,7 @@ public sealed class ReconnectController : MonoBehaviour
                     continue;
                 }
 
+                bool knownBefore = hostSession.Members.ContainsKey(steamId);
                 ReconnectMemberRecord member = GetOrCreateMember(steamId);
                 if (string.IsNullOrEmpty(member.PlayerName))
                 {
@@ -1695,11 +1799,15 @@ public sealed class ReconnectController : MonoBehaviour
                 member.RunId = hostSession.RunId;
                 member.SessionId = hostSession.SessionId;
                 member.LastSeenUtc = DateTime.UtcNow;
+                if (!knownBefore)
+                {
+                    ReconnectLogger.Info("New lobby member observed. steam=" + steamId + " nickname=" + NullToDash(user.Nickname) + " lobby=" + lobby.LobbyId);
+                }
             }
         }
         catch (Exception ex)
         {
-            Debug.LogWarning("[SephiriaReconnect] Failed to refresh lobby members: " + ex.Message);
+            ReconnectLogger.Warning("Failed to refresh lobby members: " + ex.Message);
         }
     }
 
@@ -1729,7 +1837,7 @@ public sealed class ReconnectController : MonoBehaviour
 
             if (spawner.currentPlayerIdxForSave != member.PlayerSlot)
             {
-                Debug.Log("[SephiriaReconnect] Correcting player save slot for SteamID " + spawner.steamID + " from " + spawner.currentPlayerIdxForSave + " to " + member.PlayerSlot);
+                ReconnectLogger.Info("Correcting player save slot for SteamID " + spawner.steamID + " from " + spawner.currentPlayerIdxForSave + " to " + member.PlayerSlot);
                 spawner.currentPlayerIdxForSave = member.PlayerSlot;
             }
         }
@@ -1762,10 +1870,11 @@ public sealed class ReconnectController : MonoBehaviour
             lobbyData["ReconnectCheckpointId"] = hostSession.CurrentCheckpointId ?? "";
             lobbyData["ReconnectCheckpointHash"] = hostSession.CurrentCheckpointHash ?? "";
             lastPublishedLobbyState = state;
+            ReconnectLogger.Info("Published Steam lobby reconnect data. " + DescribeLobby(lobby) + " session=" + Short(hostSession.SessionId) + " checkpoint=" + Short(hostSession.CurrentCheckpointId) + " hash=" + Short(hostSession.CurrentCheckpointHash) + " members=" + (hostSession.Members?.Count ?? 0));
         }
         catch (Exception ex)
         {
-            Debug.LogWarning("[SephiriaReconnect] Failed to publish lobby data: " + ex.Message);
+            ReconnectLogger.Warning("Failed to publish lobby data: " + ex.Message);
         }
     }
 
@@ -1774,15 +1883,166 @@ public sealed class ReconnectController : MonoBehaviour
         Instance?.HandleFloorEntryCheckpointCandidate(allowSave, floorGuid, runStarted);
     }
 
+    public static void NotifySteamLobbyEntered(LobbyData lobby, string source)
+    {
+        try
+        {
+            if (!IsReconnectLobby(lobby))
+            {
+                return;
+            }
+
+            if (SteamInvitation.waitForExternalConnect)
+            {
+                ReconnectLogger.Info("Reconnect lobby notification ignored because external connection is already pending. source=" + source + " lobby=" + lobby.SteamId.m_SteamID);
+                return;
+            }
+
+            if (NetworkServer.active && lobby.IsOwner)
+            {
+                ReconnectLogger.Info("Reconnect lobby notification ignored by owner/host. source=" + source + " lobby=" + lobby.SteamId.m_SteamID);
+                return;
+            }
+
+            if (!string.IsNullOrEmpty(lobby.GameVersion) && lobby.GameVersion != Application.version)
+            {
+                ReconnectLogger.Warning("Reconnect lobby notification ignored because game version differs. source=" + source + " lobby=" + lobby.SteamId.m_SteamID + " lobbyVersion=" + lobby.GameVersion + " localVersion=" + Application.version);
+                return;
+            }
+
+            if (!HasLoadedSaveForReconnectJoin())
+            {
+                ReconnectLogger.Info("Reconnect lobby notification deferred until a save is loaded. source=" + source + " lobby=" + lobby.SteamId.m_SteamID + " selectedProfile=" + GetSelectedProfileForLog());
+                return;
+            }
+
+            string address = ResolveReconnectLobbyHostAddress(lobby);
+            if (string.IsNullOrEmpty(address))
+            {
+                ReconnectLogger.Warning("Reconnect lobby notification ignored because no connectable host address was found. source=" + source + " lobby=" + lobby.SteamId.m_SteamID + " owner=" + lobby.Owner.user.id);
+                return;
+            }
+
+            ulong lobbyId = lobby.SteamId.m_SteamID;
+            if (IsRecentReconnectLobbyConnectAttempt(lobbyId))
+            {
+                ReconnectLogger.Info("Reconnect lobby notification ignored because a connect attempt was just started. source=" + source + " lobby=" + lobbyId);
+                return;
+            }
+
+            MarkReconnectLobbyConnectAttempt(lobbyId);
+            ReconnectLogger.Info("Reconnect lobby notification accepted; connecting to host. source=" + source + " lobby=" + lobbyId + " address=" + address + " session=" + Short(ReadReconnectLobbyData(lobby, "ReconnectSessionId")) + " checkpoint=" + Short(ReadReconnectLobbyData(lobby, "ReconnectCheckpointId")));
+            SteamInvitation.ConnectToOtherHost(address);
+        }
+        catch (Exception ex)
+        {
+            ReconnectLogger.Warning("Failed to process reconnect lobby notification: " + ex.Message);
+        }
+    }
+
+    private static bool HasLoadedSaveForReconnectJoin()
+    {
+        return DungeonManager.Instance != null &&
+            SaveManager.Current != null &&
+            !string.IsNullOrEmpty(SaveManager.Binded);
+    }
+
+    private static string GetSelectedProfileForLog()
+    {
+        try
+        {
+            if (OptionsBinding.Instance != null && OptionsBinding.Instance.Options != null)
+            {
+                return OptionsBinding.Instance.Options.GetString("SelectedProfile", SaveManager.defaultSlotName);
+            }
+        }
+        catch
+        {
+        }
+
+        return SaveManager.Binded ?? "";
+    }
+
+    private static bool IsReconnectLobby(LobbyData lobby)
+    {
+        try
+        {
+            if (!lobby.IsValid)
+            {
+                return false;
+            }
+
+            string protocol = ReadReconnectLobbyData(lobby, "ReconnectMod");
+            string sessionId = ReadReconnectLobbyData(lobby, "ReconnectSessionId");
+            return protocol == ProtocolVersion || !string.IsNullOrEmpty(sessionId);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string ResolveReconnectLobbyHostAddress(LobbyData lobby)
+    {
+        try
+        {
+            LobbyGameServer gameServer = lobby.GameServer;
+            if (gameServer.id.IsValid())
+            {
+                return gameServer.id.ToString();
+            }
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            string owner = lobby.Owner.user.id.ToString();
+            return string.IsNullOrEmpty(owner) || owner == "0" ? "" : owner;
+        }
+        catch
+        {
+            return "";
+        }
+    }
+
+    private static bool IsRecentReconnectLobbyConnectAttempt(ulong lobbyId)
+    {
+        return lobbyId != 0 &&
+            lobbyId == lastReconnectLobbyConnectAttemptId &&
+            Time.unscaledTime - lastReconnectLobbyConnectAttemptAt < 10f;
+    }
+
+    private static void MarkReconnectLobbyConnectAttempt(ulong lobbyId)
+    {
+        lastReconnectLobbyConnectAttemptId = lobbyId;
+        lastReconnectLobbyConnectAttemptAt = Time.unscaledTime;
+    }
+
+    private static string ReadReconnectLobbyData(LobbyData lobby, string key)
+    {
+        try
+        {
+            return lobby[key] ?? "";
+        }
+        catch
+        {
+            return "";
+        }
+    }
+
     private void HandleFloorEntryCheckpointCandidate(bool allowSave, string floorGuid, bool runStarted)
     {
         if (!config.AutoCaptureFloorCheckpoint || !allowSave || !runStarted)
         {
+            ReconnectLogger.Info("Floor checkpoint candidate skipped by flags. allowSave=" + allowSave + " runStarted=" + runStarted + " auto=" + config.AutoCaptureFloorCheckpoint + " floor=" + Short(floorGuid));
             return;
         }
 
         if (!NetworkServer.active)
         {
+            ReconnectLogger.Info("Floor checkpoint candidate skipped because server is inactive. floor=" + Short(floorGuid));
             return;
         }
 
@@ -1799,30 +2059,36 @@ public sealed class ReconnectController : MonoBehaviour
         PlayerSpawner local = GetLocalSpawner();
         if (local == null || local.PlayerAvatar == null || local.PlayerAvatar.loadingScreenType != -1)
         {
+            ReconnectLogger.Info("Floor checkpoint candidate skipped because local avatar is not ready. floor=" + Short(floorGuid) + " loading=" + (local?.PlayerAvatar?.loadingScreenType ?? -999));
             return;
         }
 
         if (string.IsNullOrEmpty(floorGuid) || floorGuid == lastObservedFloorGuid)
         {
+            ReconnectLogger.Info("Floor checkpoint candidate skipped because floor is empty or already observed. floor=" + Short(floorGuid) + " last=" + Short(lastObservedFloorGuid));
             return;
         }
 
         if (!string.Equals(local.PlayerAvatar.currentFloorGuid, floorGuid, StringComparison.Ordinal))
         {
+            ReconnectLogger.Info("Floor checkpoint candidate skipped because avatar floor differs. candidate=" + Short(floorGuid) + " avatar=" + Short(local.PlayerAvatar.currentFloorGuid));
             return;
         }
 
         if (local.PlayerAvatar.isInDungeon <= 0)
         {
+            ReconnectLogger.Info("Floor checkpoint candidate skipped because avatar is not in dungeon. floor=" + Short(floorGuid) + " isInDungeon=" + local.PlayerAvatar.isInDungeon);
             return;
         }
 
         if (!ShouldCaptureFloorEntryCheckpoint(local.PlayerAvatar, floorGuid))
         {
+            ReconnectLogger.Info("Floor checkpoint candidate rejected by dungeon validation. floor=" + Short(floorGuid));
             return;
         }
 
         lastObservedFloorGuid = floorGuid;
+        ReconnectLogger.Info("Floor checkpoint candidate accepted. floor=" + Short(floorGuid));
         CaptureCheckpoint("floor-entry", activateForRestore: true, floorGuid);
     }
 
@@ -1886,6 +2152,7 @@ public sealed class ReconnectController : MonoBehaviour
         try
         {
             string floorGuid = string.IsNullOrEmpty(floorGuidOverride) ? GetLocalFloorGuid() : floorGuidOverride;
+            ReconnectLogger.Info("Capturing checkpoint. reason=" + reason + " activate=" + activateForRestore + " floor=" + Short(floorGuid) + " session=" + Short(hostSession.SessionId));
             FlushCurrentRunForCheckpoint(floorGuid);
 
             if (PlayerSpawner.MultiplayerList != null)
@@ -1931,12 +2198,13 @@ public sealed class ReconnectController : MonoBehaviour
             PruneCheckpoints();
             SaveHostSession();
             statusLine = activateForRestore ? "已保存楼层入口检查点：" + checkpoint.CheckpointId : "已保存非恢复检查点：" + checkpoint.CheckpointId;
+            ReconnectLogger.Info("Checkpoint captured. " + DescribeCheckpoint(checkpoint) + " path=" + checkpoint.SnapshotPath);
             ShowSystemMessage(activateForRestore ? "已保存楼层入口重连点。" : "已保存非恢复检查点。");
         }
         catch (Exception ex)
         {
             statusLine = "保存检查点失败：" + ex.Message;
-            Debug.LogError("[SephiriaReconnect] Checkpoint failed: " + ex);
+            ReconnectLogger.Error("Checkpoint failed: " + ex);
         }
     }
 
@@ -1953,16 +2221,18 @@ public sealed class ReconnectController : MonoBehaviour
             try
             {
                 DungeonSaveCurrentSessionDataMethod?.Invoke(dungeon, new object[] { floorGuid });
+                ReconnectLogger.Info("Flushed DungeonManager session data before checkpoint. floor=" + Short(floorGuid));
             }
             catch (Exception ex)
             {
-                Debug.LogWarning("[SephiriaReconnect] Failed to flush DungeonManager session data before checkpoint: " + ex.Message);
+                ReconnectLogger.Warning("Failed to flush DungeonManager session data before checkpoint: " + ex.Message);
             }
         }
 
         SaveManager.CurrentRun.SetBool("RunStarted", value: true);
         SaveManager.CurrentRun.SetString("LastFloorGuid", floorGuid);
         UpsertDungeonEnvironmentValue("IsInDungeon", 1);
+        ReconnectLogger.Info("Forced checkpoint run markers. floor=" + Short(floorGuid) + " runStarted=true IsInDungeon=1");
     }
 
     private static void UpsertDungeonEnvironmentValue(string key, int value)
@@ -2017,6 +2287,7 @@ public sealed class ReconnectController : MonoBehaviour
 
             ReconnectCheckpointRecord removed = hostSession.Checkpoints[removeIndex];
             hostSession.Checkpoints.RemoveAt(removeIndex);
+            ReconnectLogger.Info("Pruned old checkpoint by count. " + DescribeCheckpoint(removed));
             store.DeleteCheckpointFiles(removed);
         }
 
@@ -2035,6 +2306,7 @@ public sealed class ReconnectController : MonoBehaviour
 
             store.DeleteCheckpointFiles(checkpointId);
             orphanDeleted++;
+            ReconnectLogger.Info("Pruned orphan checkpoint files. id=" + checkpointId);
         }
     }
 
@@ -2043,12 +2315,14 @@ public sealed class ReconnectController : MonoBehaviour
         if (!NetworkServer.active)
         {
             statusLine = "已跳过：只有房主/服务端可以准备恢复。";
+            ReconnectLogger.Warning("Restore requested while server is inactive.");
             return;
         }
 
         if (hostSession == null || string.IsNullOrEmpty(hostSession.CurrentCheckpointId))
         {
             statusLine = "当前没有可恢复的检查点。";
+            ReconnectLogger.Warning("Restore requested without current checkpoint. hostSession=" + (hostSession != null));
             return;
         }
 
@@ -2057,6 +2331,7 @@ public sealed class ReconnectController : MonoBehaviour
             statusLine = config.RequireAllPlayersBeforeRestore
                 ? "还有掉线成员未回房；按配置仍继续执行本层恢复。"
                 : "还有掉线成员未回房；将先恢复本层，之后可邀请成员回房。";
+            ReconnectLogger.Warning("Restore requested with unreturned reserved members. requireAll=" + config.RequireAllPlayersBeforeRestore);
             ShowSystemMessage(statusLine);
         }
 
@@ -2064,17 +2339,23 @@ public sealed class ReconnectController : MonoBehaviour
         if (checkpoint == null || !File.Exists(checkpoint.SnapshotPath))
         {
             statusLine = "检查点快照文件不存在。";
+            ReconnectLogger.Warning("Restore checkpoint file missing. checkpoint=" + DescribeCheckpoint(checkpoint));
             return;
         }
 
+        ReconnectLogger.Info("Restore requested. " + DescribeCheckpoint(checkpoint));
         if (!ValidateCheckpointSnapshot(checkpoint, out string invalidReason))
         {
+            ReconnectLogger.Warning("Checkpoint validation failed before restore. reason=" + invalidReason + " " + DescribeCheckpoint(checkpoint));
             if (!TryRefreshCheckpointSnapshotFromCurrentRun(checkpoint) || !ValidateCheckpointSnapshot(checkpoint, out invalidReason))
             {
                 statusLine = "检查点不可恢复：" + invalidReason;
+                ReconnectLogger.Error("Restore aborted; checkpoint is still invalid. reason=" + invalidReason + " " + DescribeCheckpoint(checkpoint));
                 ShowSystemMessage(statusLine);
                 return;
             }
+
+            ReconnectLogger.Info("Checkpoint validation passed after repair. " + DescribeCheckpoint(checkpoint));
         }
 
         try
@@ -2088,6 +2369,7 @@ public sealed class ReconnectController : MonoBehaviour
             }
 
             File.Copy(checkpoint.SnapshotPath, target, overwrite: true);
+            ReconnectLogger.Info("Checkpoint copied to TMP save. selectedProfile=" + selectedProfile + " target=" + target + " backup=" + (File.Exists(backup) ? backup : "-"));
             StartCoroutine(RestoreHostFromCheckpointCoroutine(selectedProfile, checkpoint.CheckpointId));
             statusLine = "正在执行本层恢复。";
             ShowSystemMessage("正在执行本层恢复。");
@@ -2095,7 +2377,7 @@ public sealed class ReconnectController : MonoBehaviour
         catch (Exception ex)
         {
             statusLine = "准备恢复失败：" + ex.Message;
-            Debug.LogError("[SephiriaReconnect] Prepare restore failed: " + ex);
+            ReconnectLogger.Error("Prepare restore failed: " + ex);
         }
     }
 
@@ -2111,6 +2393,7 @@ public sealed class ReconnectController : MonoBehaviour
         manager.requestSelfLeave = true;
         HorayNetworkAuthenticator.allowConnection = true;
         statusLine = "正在停止主机并载入检查点……";
+        ReconnectLogger.Warning("Restore coroutine stopping host. selectedProfile=" + selectedProfile + " checkpoint=" + checkpointId + " serverPlayerIndex=" + HorayNetworkManager.serverPlayerIndex);
         pendingLobbySettings = CaptureCurrentLobbySettings();
         PrepareRuntimeStateForRestore();
         ResetPlayerEffectHud();
@@ -2122,20 +2405,24 @@ public sealed class ReconnectController : MonoBehaviour
         bool loadedProfile = SaveManager.Load(selectedProfile);
         bool loadedTmp = SaveManager.LoadTMP(selectedProfile);
         SaveManager.ApplyPostLoadSaveFixes();
+        ReconnectLogger.Info("Restore save load results. profile=" + loadedProfile + " tmp=" + loadedTmp + " selectedProfile=" + selectedProfile);
         if (!loadedProfile || !loadedTmp)
         {
             statusLine = "恢复失败：无法重新载入检查点存档。";
+            ReconnectLogger.Error("Restore failed because save reload failed. profile=" + loadedProfile + " tmp=" + loadedTmp);
             ShowSystemMessage(statusLine);
             yield break;
         }
 
         statusLine = "正在重启主机并回到检查点楼层……";
         NetworkManager.singleton.StartHost();
+        ReconnectLogger.Warning("Restore coroutine started host. checkpoint=" + checkpointId + " serverPlayerIndex=" + HorayNetworkManager.serverPlayerIndex);
         yield return new WaitForSeconds(1f);
         OpenReconnectJoinWindow("restore-host-started");
         EnsureHostSession();
         yield return EnsureSteamLobbyAndPublishAfterRestore();
         statusLine = "已请求恢复到检查点：" + checkpointId;
+        ReconnectLogger.Info("Restore coroutine completed. checkpoint=" + checkpointId + " hostSession=" + (hostSession != null) + " lobby=" + (hostSession?.LobbyId ?? 0));
         ShowSystemMessage("已请求恢复到检查点楼层。");
     }
 
@@ -2174,12 +2461,12 @@ public sealed class ReconnectController : MonoBehaviour
 
             store.SaveCheckpointMeta(checkpoint);
             SaveHostSession();
-            Debug.LogWarning("[SephiriaReconnect] Repaired checkpoint snapshot before restore: " + checkpoint.CheckpointId);
+            ReconnectLogger.Warning("Repaired checkpoint snapshot before restore: " + DescribeCheckpoint(checkpoint));
             return true;
         }
         catch (Exception ex)
         {
-            Debug.LogWarning("[SephiriaReconnect] Failed to repair checkpoint snapshot before restore: " + ex.Message);
+            ReconnectLogger.Warning("Failed to repair checkpoint snapshot before restore: " + ex.Message);
             return false;
         }
     }
@@ -2199,12 +2486,14 @@ public sealed class ReconnectController : MonoBehaviour
             if (!data.LoadFromString(File.ReadAllText(checkpoint.SnapshotPath)))
             {
                 reason = "快照无法读取。";
+                ReconnectLogger.Warning("Checkpoint validation failed: cannot load snapshot. " + DescribeCheckpoint(checkpoint));
                 return false;
             }
 
             if (!data.GetBool("RunStarted", fallback: false))
             {
                 reason = "快照不是局内状态。";
+                ReconnectLogger.Warning("Checkpoint validation failed: RunStarted=false. " + DescribeCheckpoint(checkpoint));
                 return false;
             }
 
@@ -2212,26 +2501,31 @@ public sealed class ReconnectController : MonoBehaviour
             if (string.IsNullOrEmpty(savedFloorGuid))
             {
                 reason = "快照缺少楼层记录。";
+                ReconnectLogger.Warning("Checkpoint validation failed: missing LastFloorGuid. " + DescribeCheckpoint(checkpoint));
                 return false;
             }
 
             if (!string.IsNullOrEmpty(checkpoint.FloorGuid) && !string.Equals(savedFloorGuid, checkpoint.FloorGuid, StringComparison.Ordinal))
             {
                 reason = "快照楼层和检查点记录不一致。";
+                ReconnectLogger.Warning("Checkpoint validation failed: LastFloorGuid mismatch. saved=" + Short(savedFloorGuid) + " expected=" + Short(checkpoint.FloorGuid) + " " + DescribeCheckpoint(checkpoint));
                 return false;
             }
 
             if (!SnapshotHasDungeonEnvironmentValue(data, "IsInDungeon", 1))
             {
                 reason = "快照缺少地牢状态。";
+                ReconnectLogger.Warning("Checkpoint validation failed: missing IsInDungeon=1. " + DescribeCheckpoint(checkpoint));
                 return false;
             }
 
+            ReconnectLogger.Info("Checkpoint validation passed. savedFloor=" + Short(savedFloorGuid) + " " + DescribeCheckpoint(checkpoint));
             return true;
         }
         catch (Exception ex)
         {
             reason = ex.Message;
+            ReconnectLogger.Warning("Checkpoint validation threw exception: " + ex.Message + " " + DescribeCheckpoint(checkpoint));
             return false;
         }
     }
@@ -2263,6 +2557,7 @@ public sealed class ReconnectController : MonoBehaviour
         {
             OpenReconnectJoinWindow("ensure-lobby-after-restore");
             LobbyInfo lobby = GetLobbyInfo();
+            ReconnectLogger.Info("Ensuring Steam lobby after restore. " + DescribeLobby(lobby));
             if (lobby.HasLobby && lobby.LobbyId != 0)
             {
                 ApplyLobbySettingsSnapshot(lobby);
@@ -2276,6 +2571,7 @@ public sealed class ReconnectController : MonoBehaviour
 
             if (lobby.Manager != null)
             {
+                ReconnectLogger.Warning("No active Steam lobby after restore; creating a new private lobby.");
                 lobby.Manager.Create();
                 OpenReconnectJoinWindow("create-lobby-after-restore");
                 statusLine = "已恢复本层，正在重新创建 Steam 房间。";
@@ -2283,7 +2579,7 @@ public sealed class ReconnectController : MonoBehaviour
         }
         catch (Exception ex)
         {
-            Debug.LogWarning("[SephiriaReconnect] Failed to ensure Steam lobby after restore: " + ex.Message);
+            ReconnectLogger.Warning("Failed to ensure Steam lobby after restore: " + ex.Message);
             yield break;
         }
 
@@ -2293,6 +2589,7 @@ public sealed class ReconnectController : MonoBehaviour
             LobbyInfo lobby = GetLobbyInfo();
             if (lobby.HasLobby && lobby.LobbyId != 0)
             {
+                ReconnectLogger.Info("Steam lobby ready after restore. " + DescribeLobby(lobby));
                 ApplyLobbySettingsSnapshot(lobby);
                 OpenReconnectJoinWindow("lobby-ready-after-restore");
                 if (hostSession != null)
@@ -2309,6 +2606,7 @@ public sealed class ReconnectController : MonoBehaviour
         }
 
         statusLine = "已恢复本层，但 Steam 房间尚未就绪。";
+        ReconnectLogger.Warning("Timed out waiting for Steam lobby after restore.");
         ShowSystemMessage(statusLine);
     }
 
@@ -2323,7 +2621,7 @@ public sealed class ReconnectController : MonoBehaviour
             }
 
             LobbyData data = lobby.Manager.Lobby;
-            return new LobbySettingsSnapshot
+            LobbySettingsSnapshot snapshot = new LobbySettingsSnapshot
             {
                 Name = data.Name,
                 GameVersion = data.GameVersion,
@@ -2331,10 +2629,12 @@ public sealed class ReconnectController : MonoBehaviour
                 MaxMembers = data.MaxMembers,
                 Chapter = data["Chapter"]
             };
+            ReconnectLogger.Info("Captured Steam lobby settings. " + DescribeLobby(lobby) + " name=" + NullToDash(snapshot.Name) + " version=" + NullToDash(snapshot.GameVersion) + " type=" + snapshot.Type + " max=" + snapshot.MaxMembers + " chapter=" + NullToDash(snapshot.Chapter));
+            return snapshot;
         }
         catch (Exception ex)
         {
-            Debug.LogWarning("[SephiriaReconnect] Failed to capture Steam lobby settings before restore: " + ex.Message);
+            ReconnectLogger.Warning("Failed to capture Steam lobby settings before restore: " + ex.Message);
             return null;
         }
     }
@@ -2362,6 +2662,7 @@ public sealed class ReconnectController : MonoBehaviour
                 data.Name = BuildFallbackLobbyName();
                 data["Chapter"] = BuildLobbyChapterValue();
                 data.SetGameServer(UserData.Me.id);
+                ReconnectLogger.Info("Applied fallback Steam lobby settings. " + DescribeLobby(lobby) + " name=" + NullToDash(data.Name) + " version=" + NullToDash(data.GameVersion) + " type=" + data.Type + " max=" + data.MaxMembers + " chapter=" + NullToDash(data["Chapter"]));
                 return;
             }
 
@@ -2385,11 +2686,12 @@ public sealed class ReconnectController : MonoBehaviour
                 : pendingLobbySettings.Chapter;
 
             data.SetGameServer(UserData.Me.id);
+            ReconnectLogger.Info("Restored Steam lobby settings. " + DescribeLobby(lobby) + " name=" + NullToDash(data.Name) + " version=" + NullToDash(data.GameVersion) + " type=" + data.Type + " max=" + data.MaxMembers + " chapter=" + NullToDash(data["Chapter"]));
             pendingLobbySettings = null;
         }
         catch (Exception ex)
         {
-            Debug.LogWarning("[SephiriaReconnect] Failed to restore Steam lobby settings after restore: " + ex.Message);
+            ReconnectLogger.Warning("Failed to restore Steam lobby settings after restore: " + ex.Message);
         }
     }
 
@@ -2447,7 +2749,7 @@ public sealed class ReconnectController : MonoBehaviour
         }
         catch (Exception ex)
         {
-            Debug.LogWarning("[SephiriaReconnect] Failed to build Steam lobby chapter value: " + ex.Message);
+            ReconnectLogger.Warning("Failed to build Steam lobby chapter value: " + ex.Message);
         }
 
         return "0";
@@ -2492,7 +2794,7 @@ public sealed class ReconnectController : MonoBehaviour
         }
         catch (Exception ex)
         {
-            Debug.LogWarning("[SephiriaReconnect] Failed to scan network connections before restore: " + ex.Message);
+            ReconnectLogger.Warning("Failed to scan network connections before restore: " + ex.Message);
         }
 
         try
@@ -2507,7 +2809,7 @@ public sealed class ReconnectController : MonoBehaviour
         }
         catch (Exception ex)
         {
-            Debug.LogWarning("[SephiriaReconnect] Failed to scan multiplayer list before restore: " + ex.Message);
+            ReconnectLogger.Warning("Failed to scan multiplayer list before restore: " + ex.Message);
         }
 
         try
@@ -2519,7 +2821,7 @@ public sealed class ReconnectController : MonoBehaviour
         }
         catch (Exception ex)
         {
-            Debug.LogWarning("[SephiriaReconnect] Failed to clear global item stat table before restore: " + ex.Message);
+            ReconnectLogger.Warning("Failed to clear global item stat table before restore: " + ex.Message);
         }
     }
 
@@ -2549,7 +2851,7 @@ public sealed class ReconnectController : MonoBehaviour
         }
         catch (Exception ex)
         {
-            Debug.LogError("[SephiriaReconnect] Error resetting player runtime before restore: " + ex);
+            ReconnectLogger.Error("Error resetting player runtime before restore: " + ex);
         }
     }
 
@@ -2631,7 +2933,7 @@ public sealed class ReconnectController : MonoBehaviour
         }
         catch (Exception ex)
         {
-            Debug.LogWarning("[SephiriaReconnect] Failed to reset player effect HUD: " + ex.Message);
+            ReconnectLogger.Warning("Failed to reset player effect HUD: " + ex.Message);
         }
     }
 
@@ -2676,15 +2978,18 @@ public sealed class ReconnectController : MonoBehaviour
         if (lastSession == null || lastSession.LobbyId == 0)
         {
             statusLine = "没有记录到上次房间。";
+            ReconnectLogger.Warning("Join last lobby requested without last session.");
             return;
         }
 
         try
         {
+            ReconnectLogger.Info("Join last lobby requested. lobby=" + lastSession.LobbyId + " host=" + lastSession.HostSteamId + " session=" + Short(lastSession.SessionId) + " checkpoint=" + Short(lastSession.CheckpointId));
             GameObject steam = SingletonObject.Find("SteamManager");
             if (!steam || !steam.TryGetComponent<LobbyManager>(out var lobbyManager))
             {
                 statusLine = "未找到 Steam 房间管理器。";
+                ReconnectLogger.Warning("Join last lobby aborted; Steam LobbyManager not found.");
                 return;
             }
 
@@ -2695,7 +3000,7 @@ public sealed class ReconnectController : MonoBehaviour
         catch (Exception ex)
         {
             statusLine = "加入上次房间失败：" + ex.Message;
-            Debug.LogError("[SephiriaReconnect] Join last lobby failed: " + ex);
+            ReconnectLogger.Error("Join last lobby failed: " + ex);
         }
     }
 
@@ -2708,6 +3013,7 @@ public sealed class ReconnectController : MonoBehaviour
         {
             if (lobbyManager.HasLobby && lobbyManager.Lobby.SteamId.m_SteamID == lobby.SteamId.m_SteamID)
             {
+                ReconnectLogger.Info("Joined last Steam lobby; connecting to owner. lobby=" + lobby.SteamId.m_SteamID + " owner=" + lobby.Owner.user.id);
                 SteamInvitation.ConnectToOtherHost(lobby.Owner.user.id.ToString());
                 statusLine = "已回到上次房间，正在连接房主。";
                 yield break;
@@ -2717,6 +3023,7 @@ public sealed class ReconnectController : MonoBehaviour
         }
 
         statusLine = "加入上次房间超时。";
+        ReconnectLogger.Warning("Join last lobby timed out. targetLobby=" + lobby.SteamId.m_SteamID);
         ShowSystemMessage(statusLine);
     }
 
@@ -2725,6 +3032,7 @@ public sealed class ReconnectController : MonoBehaviour
         if (!NetworkClient.active)
         {
             statusLine = "当前客户端未连接，无法发送握手。";
+            ReconnectLogger.Warning("Hello send skipped because NetworkClient is inactive. reconnect=" + reconnectAttempt);
             return;
         }
 
@@ -2746,13 +3054,14 @@ public sealed class ReconnectController : MonoBehaviour
 
         try
         {
+            ReconnectLogger.Info("Sending hello. " + DescribeHello(msg) + " lobbySession=" + Short(lobbySessionId) + " " + DescribeLobby(lobby));
             NetworkClient.Send(msg);
             statusLine = "已发送重连握手。";
         }
         catch (Exception ex)
         {
             statusLine = "发送握手失败：" + ex.Message;
-            Debug.LogError("[SephiriaReconnect] Send hello failed: " + ex);
+            ReconnectLogger.Error("Send hello failed: " + ex);
         }
     }
 
@@ -2760,9 +3069,12 @@ public sealed class ReconnectController : MonoBehaviour
     {
         EnsureHostSession();
         ReconnectHelloReplyMessage reply = ValidateHello(msg);
+        ReconnectLogger.Info("Received hello. accepted=" + reply.accepted + " reason=" + NullToDash(reply.reason) + " " + DescribeHello(msg) + " conn=" + (conn != null ? conn.connectionId.ToString() : "-"));
         if (reply.accepted)
         {
             ReconnectMemberRecord member = GetOrCreateMember(msg.playerSteamId);
+            ReconnectMemberState previousState = member.State;
+            int previousSlot = member.PlayerSlot;
             member.PlayerName = string.IsNullOrWhiteSpace(msg.playerName) ? member.PlayerName : msg.playerName;
             member.ModInstalled = true;
             member.LastHelloUtc = DateTime.UtcNow;
@@ -2780,16 +3092,18 @@ public sealed class ReconnectController : MonoBehaviour
             {
                 reconnectSpawner.currentPlayerIdxForSave = member.PlayerSlot;
             }
+            ReconnectLogger.Info("Hello accepted and member updated. oldState=" + previousState + " oldSlot=" + previousSlot + " " + DescribeMember(member));
             SaveHostSession();
         }
 
         try
         {
             conn?.Send(reply);
+            ReconnectLogger.Info("Sent hello reply. accepted=" + reply.accepted + " reason=" + NullToDash(reply.reason) + " to=" + msg.playerSteamId);
         }
         catch (Exception ex)
         {
-            Debug.LogWarning("[SephiriaReconnect] Failed to reply hello: " + ex.Message);
+            ReconnectLogger.Warning("Failed to reply hello: " + ex.Message);
         }
     }
 
@@ -2877,6 +3191,7 @@ public sealed class ReconnectController : MonoBehaviour
     private void HandleClientHelloReply(ReconnectHelloReplyMessage msg)
     {
         statusLine = msg.accepted ? msg.reason : "重连被拒绝：" + msg.reason;
+        ReconnectLogger.Info("Received hello reply. accepted=" + msg.accepted + " reason=" + NullToDash(msg.reason) + " host=" + msg.hostSteamId + " lobby=" + msg.lobbyId + " session=" + Short(msg.sessionId) + " checkpoint=" + Short(msg.checkpointId));
         if (!msg.accepted)
         {
             ShowSystemMessage(statusLine);
@@ -2900,29 +3215,54 @@ public sealed class ReconnectController : MonoBehaviour
             LastSeenUtc = DateTime.UtcNow
         };
         store.SaveLastSession(lastSession);
+        ReconnectLogger.Info("Saved last session from hello reply. player=" + lastSession.PlayerSteamId + " host=" + lastSession.HostSteamId + " lobby=" + lastSession.LobbyId + " session=" + Short(lastSession.SessionId));
     }
 
     private void HandleServerDisconnect(NetworkConnectionToClient conn)
     {
-        if (hostSession == null || conn == null || conn.identity == null)
+        if (hostSession == null || conn == null)
         {
+            ReconnectLogger.Warning("Server disconnect event ignored because session/connection is missing. hostSession=" + (hostSession != null) + " conn=" + (conn != null));
             return;
         }
 
-        PlayerSpawner spawner = conn.identity.GetComponent<PlayerSpawner>();
-        if (spawner == null || spawner.steamID == 0)
+        PlayerSpawner spawner = conn.identity != null ? conn.identity.GetComponent<PlayerSpawner>() : null;
+        ulong steamId = spawner != null ? spawner.steamID : 0;
+        if (steamId == 0 && connectionSteamIds.TryGetValue(conn.connectionId, out ulong rememberedSteamId))
         {
+            steamId = rememberedSteamId;
+        }
+
+        if (steamId == 0)
+        {
+            ReconnectLogger.Warning("Server disconnect event ignored because SteamID is missing. conn=" + conn.connectionId + " identity=" + (conn.identity != null));
             return;
         }
 
-        ReconnectMemberRecord member = GetOrCreateMember(spawner.steamID);
-        member.PlayerName = SafePlayerName(spawner);
+        ReconnectMemberRecord member = GetOrCreateMember(steamId);
+        ReconnectMemberState previousState = member.State;
+        if (spawner != null)
+        {
+            member.PlayerName = SafePlayerName(spawner);
+            member.CurrentFloorId = SafeFloorGuid(spawner);
+        }
         member.LastSeenUtc = DateTime.UtcNow;
         member.State = ReconnectMemberState.OfflineReserved;
-        member.CurrentFloorId = SafeFloorGuid(spawner);
         member.CheckpointId = hostSession.CurrentCheckpointId;
         SaveHostSession();
+        connectionSteamIds.Remove(conn.connectionId);
         statusLine = "已保留掉线玩家：" + member.SteamId;
+        ReconnectLogger.Warning("Server disconnect reserved member. oldState=" + previousState + " " + DescribeMember(member) + " conn=" + conn.connectionId);
+    }
+
+    private void RememberConnectionSteamId(PlayerSpawner spawner)
+    {
+        if (spawner == null || spawner.steamID == 0 || spawner.connectionToClient == null)
+        {
+            return;
+        }
+
+        connectionSteamIds[spawner.connectionToClient.connectionId] = spawner.steamID;
     }
 
     private ReconnectMemberRecord GetOrCreateMember(ulong steamId)
@@ -2940,6 +3280,7 @@ public sealed class ReconnectController : MonoBehaviour
                 State = ReconnectMemberState.Online
             };
             hostSession.Members[steamId] = member;
+            ReconnectLogger.Info("Created member record. " + DescribeMember(member));
         }
 
         return member;
@@ -2951,25 +3292,30 @@ public sealed class ReconnectController : MonoBehaviour
         ReconnectController controller = Instance;
         if (controller == null || controller.hostSession == null)
         {
+            ReconnectLogger.Info("Reserved slot lookup failed because controller/session is missing. steam=" + steamId);
             return false;
         }
 
         if (!controller.hostSession.Members.TryGetValue(steamId, out ReconnectMemberRecord member))
         {
+            ReconnectLogger.Info("Reserved slot lookup failed because member is unknown. steam=" + steamId);
             return false;
         }
 
         if (member.PlayerSlot < 0)
         {
+            ReconnectLogger.Info("Reserved slot lookup failed because slot is not assigned. " + DescribeMember(member));
             return false;
         }
 
         if (!CanReuseReservedPlayerSlot(member.State))
         {
+            ReconnectLogger.Warning("Reserved slot lookup refused because member is not in a reusable state. " + DescribeMember(member));
             return false;
         }
 
         slot = member.PlayerSlot;
+        ReconnectLogger.Info("Reserved slot lookup succeeded. " + DescribeMember(member));
         return true;
     }
 
@@ -3313,6 +3659,59 @@ public sealed class ReconnectController : MonoBehaviour
         return member.ModInstalled ? "mod已确认" : "mod未握手";
     }
 
+    private static string DescribeLobby(LobbyInfo lobby)
+    {
+        return "has=" + lobby.HasLobby +
+            " lobby=" + lobby.LobbyId +
+            " owner=" + lobby.IsOwner +
+            " local=" + lobby.LocalSteamId +
+            " host=" + lobby.HostSteamId;
+    }
+
+    private static string DescribeMember(ReconnectMemberRecord member)
+    {
+        if (member == null)
+        {
+            return "<null>";
+        }
+
+        return "steam=" + member.SteamId +
+            " name=" + NullToDash(member.PlayerName) +
+            " slot=" + member.PlayerSlot +
+            " state=" + member.State +
+            " mod=" + member.ModInstalled +
+            " floor=" + Short(member.CurrentFloorId) +
+            " checkpoint=" + Short(member.CheckpointId);
+    }
+
+    private static string DescribeCheckpoint(ReconnectCheckpointRecord checkpoint)
+    {
+        if (checkpoint == null)
+        {
+            return "<null>";
+        }
+
+        return "id=" + NullToDash(checkpoint.CheckpointId) +
+            " floor=" + NullToDash(checkpoint.FloorName) +
+            " guid=" + Short(checkpoint.FloorGuid) +
+            " run=" + NullToDash(checkpoint.RunId) +
+            " slot=" + NullToDash(checkpoint.SaveSlotId) +
+            " hash=" + Short(checkpoint.CheckpointHash);
+    }
+
+    private static string DescribeHello(ReconnectHelloMessage msg)
+    {
+        return "steam=" + msg.playerSteamId +
+            " name=" + NullToDash(msg.playerName) +
+            " reconnect=" + msg.reconnectAttempt +
+            " protocol=" + NullToDash(msg.protocolVersion) +
+            " save=" + NullToDash(msg.saveSlotId) +
+            " run=" + NullToDash(msg.runId) +
+            " session=" + Short(msg.sessionId) +
+            " token=" + Short(msg.reconnectToken) +
+            " checkpoint=" + Short(msg.checkpointId);
+    }
+
     private static string ReadLobbySessionId(LobbyInfo lobby)
     {
         try
@@ -3343,7 +3742,7 @@ public sealed class ReconnectController : MonoBehaviour
         {
         }
 
-        Debug.Log("[SephiriaReconnect] " + message);
+        ReconnectLogger.Info(message);
     }
 
     private struct LobbyInfo

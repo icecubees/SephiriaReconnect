@@ -1,75 +1,111 @@
 # SephiriaReconnect
 
-SephiriaReconnect 是一个为《Sephiria》制作的原生 AddOn 断线重连 Mod。它不是 BepInEx 插件；当前项目使用游戏自带 AddOn 加载方式，并随 Mod 一起放置 Harmony 运行库。
+《Sephiria》原生 AddOn 断线重连 Mod。
 
-当前目标是尽量解决多人游戏中途掉线后的恢复问题：
+这个项目不是 BepInEx 插件，也不依赖 Belnex。Mod 使用游戏自带的 AddOn 加载方式，并随包附带 `0Harmony.dll` 用于 Harmony patch。
 
-- 房主在每层入口自动保存“本层恢复”检查点。
-- 成员掉线后，房主保留该成员的 SteamID、玩家槽位和重连状态。
-- 房主可以通过 Steam 邀请机制把历史掉线成员拉回房间。
-- 掉线成员回到房间后，Mod 会发送握手，房主把该 SteamID 重新绑定到原玩家槽位。
-- 房主可以执行“本层恢复”，让本局回到进入该楼层时的状态。
-- UI 使用 Unity 面板，不使用 IMGUI。
-- 左下角重连图标会自动跟随原生 HUD 图标组，并在其他界面/过场隐藏。
+当前目标是尽量改善多人游戏中途掉线后的恢复体验：房主保存每层入口检查点，成员掉线后保留 SteamID 与槽位信息；房主可以先执行本层恢复，也可以先通过 Steam 邀请或上次房间数据让成员回到房主会话，再由握手流程尝试恢复原槽位。
+
+## 功能
+
+- 每层入口自动保存“本层恢复”检查点。
+- 掉线成员按 SteamID 保留玩家槽位，减少重连后占错槽位的风险。
+- 支持房主在成员未回房时先执行本层恢复。
+- 恢复后继续刷新 Steam lobby 重连数据，方便成员稍后再回房。
+- 支持 Steam 邀请重连和客户端“加入上次房间”。
+- 使用 Unity UI 面板，不使用 IMGUI。
+- 左下角兔头图标自动跟随原生 HUD 图标组，并在过场或其他界面打开时隐藏。
+- 提供文件日志，并按数量、大小和保留天数自动清理旧日志。
 
 ## 安装
 
-把发布目录复制到游戏 AddOns 目录：
+下载 release 压缩包后，把里面的 `SephiriaReconnect` 文件夹放到游戏 AddOns 目录：
 
 ```text
-E:\steam\steamapps\common\Sephiria\AddOns\SephiriaReconnect
+Steam\steamapps\common\Sephiria\AddOns\SephiriaReconnect
 ```
 
-目录内至少应包含：
+安装后目录应类似：
 
 ```text
-SephiriaReconnect.dll
-0Harmony.dll
-metadata.json
-config.json
-assets
-README.md
+Sephiria\AddOns\SephiriaReconnect
+├─ SephiriaReconnect.dll
+├─ 0Harmony.dll
+├─ metadata.json
+├─ config.json
+├─ README.md
+└─ assets
+   ├─ reconnect-rabbit-green.png
+   ├─ reconnect-rabbit-green-hover.png
+   ├─ reconnect-rabbit-amber.png
+   └─ reconnect-rabbit-gray.png
 ```
 
-其他玩家如果要完整参与断线重连，也需要安装同一份 Mod。未安装 Mod 的玩家可能仍可通过原版联机加入，但无法参与 Mod 的握手、槽位保留和状态恢复流程。
+建议所有参与联机的玩家安装同一版本 Mod。房主安装 Mod 是断线恢复链路的核心；客户端安装同版本 Mod 后可以发送重连握手，让房主更准确地按 SteamID 恢复槽位。
 
-## 面板功能
+未安装 Mod 的玩家仍可能通过原版 Steam 邀请进入房间，但不会参与 Mod 握手，稳定性和槽位恢复能力不如双方同版本安装。
 
-点击左下角绿色兔头图标可打开重连面板。
+## 使用
 
-- `本层恢复`：房主使用。把当前局恢复到最近一次楼层入口检查点。当前实现允许成员还没回房时先恢复，恢复后会继续保留/刷新 Steam lobby 数据。
-- `邀请重连`：房主使用。打开 Steam 邀请窗口，并尝试对历史掉线成员发送定向 Steam 邀请。
-- `发送握手`：客户端使用。向房主发送重连握手，包含本机 SteamID、上次会话和检查点信息。
-- `加入上次房间`：客户端使用。尝试加入上次记录的 Steam lobby，再走原版 Steam 连接流程连接房主。
+进入游戏后，左下角原生图标右侧会出现一个兔头图标。点击图标打开中文重连面板。
 
-## 重连逻辑
+### 房主
 
-本 Mod 的核心思路不是在运行中强行修补所有活体对象，而是复用游戏原版读档和开局流程：
+- `本层恢复`：恢复到最近一次楼层入口检查点。恢复时会重启当前 host，并尽量保留/刷新 Steam lobby 重连数据。
+- `邀请重连`：打开 Steam 邀请窗口，并尝试对历史成员发送 Steam 邀请。
 
-1. 房主进入新楼层时，Harmony 监听游戏原本的楼层保存流程。
-2. Mod 复制当前 `CurrentRun` 临时存档，生成本层入口检查点。
-3. 玩家掉线后，房主记录该玩家为“掉线保留”。
-4. 玩家通过 Steam 邀请或“加入上次房间”回到房主房间。
-5. 握手成功后，房主把该 SteamID 绑定回原来的玩家存档槽位。
-6. 房主执行“本层恢复”时，Mod 停止主机、载入检查点、重新 StartHost，并重新发布 Steam lobby 重连数据。
+### 客户端
 
-这样可以让血量、背包、神器、果串、临时加成等状态尽量回到进入本楼层时的保存状态。
+- `加入上次房间`：尝试读取上次记录的重连 lobby，再连接到房主。
+- `发送握手`：向房主发送当前 SteamID、会话与检查点信息，用于重新绑定原玩家槽位。
 
-## Steam 房间说明
+一般流程：
 
-原版游戏在本局开始后会把 Steam lobby 设为不可加入，并让客户端离开 lobby，因此中途加入不是原版正式支持的流程。Mod 会在需要邀请/恢复时重新确保 lobby 存在，并写入重连数据。
+1. 房主和成员正常联机进入关卡。
+2. 房主进入每层时，Mod 自动保存本层入口检查点。
+3. 成员掉线后，房主面板中会显示该成员为离线或待重连。
+4. 房主可先执行 `本层恢复`，也可以先 `邀请重连`。
+5. 成员通过 Steam 邀请或 `加入上次房间` 回到房主会话。
+6. 成员回房后发送握手，房主按 SteamID 尝试绑定回原槽位。
 
-如果单机状态下使用“本层恢复”触发了 Steam lobby 创建，Mod 会把该 lobby 设置为私密房间，最大人数默认为 4。
+## 恢复逻辑
+
+本 Mod 不尝试在掉线瞬间强行复制所有运行中对象。核心策略是复用游戏原本的读档与开局流程：
+
+1. Harmony 监听楼层进入、读档、联机和 Steam 邀请相关流程。
+2. 房主在楼层入口复制当前 `CurrentRun` 临时存档，生成本层检查点。
+3. 房主记录当前会话、检查点、Steam lobby、成员 SteamID 和玩家槽位。
+4. 成员掉线后，房主把对应 SteamID 标记为离线保留。
+5. 执行本层恢复时，Mod 停止 host、载入检查点、重新 StartHost。
+6. 恢复后重新发布 Steam lobby 重连数据。
+7. 成员回房并握手后，房主把该 SteamID 重新绑定到原来的槽位。
+
+恢复目标是“进入本楼层时的状态”，不是掉线瞬间原地恢复。血量、背包、神器、果串、临时加成等内容以本层入口检查点为准。
+
+## Steam 房间
+
+原版游戏在本局开始后通常会限制中途加入，因此只靠 Steam 好友列表右键加入并不稳定。
+
+Mod 会在需要重连时短时间打开 join window，并写入 Steam lobby 数据：
+
+- 当前重连会话 ID
+- 检查点 ID
+- 房主 SteamID
+- 游戏服务端 ID
+- 是否允许地牢中加入
+- Mod 版本信息
+
+如果单机状态下使用 `本层恢复` 触发了 Steam lobby 创建，Mod 会把 lobby 设置为私密房间，默认最大人数为 4。
 
 ## 配置
 
-配置文件位置：
+配置文件：
 
 ```text
-AddOns\SephiriaReconnect\config.json
+Sephiria\AddOns\SephiriaReconnect\config.json
 ```
 
-常用字段：
+常用配置：
 
 ```json
 {
@@ -77,16 +113,12 @@ AddOns\SephiriaReconnect\config.json
   "AutoCaptureFloorCheckpoint": true,
   "ClientHelloIntervalSeconds": 15,
   "MaxAutoHelloAttempts": 3,
+  "ReconnectTimeoutSeconds": 300,
   "RequireAllPlayersBeforeRestore": false,
-  "AutoPlaceIconAfterLowerLeftHud": true,
   "MaxCheckpointCount": 12,
-  "MaxCheckpointPruneBatch": 4,
   "HostSessionRefreshSeconds": 5,
   "HostPlayerRefreshSeconds": 3,
   "HostLobbyRefreshSeconds": 10,
-  "HostLobbyPublishSeconds": 5,
-  "ForceOpenInDungeonJoinForReconnect": true,
-  "ForceLobbyJoinableForReconnect": true,
   "ReconnectJoinWindowSeconds": 180,
   "EnableFileLogging": true,
   "MaxLogFiles": 8,
@@ -95,31 +127,60 @@ AddOns\SephiriaReconnect\config.json
 }
 ```
 
+说明：
+
+- `AutoSendHello`：客户端在确认需要重连时自动发送握手。
+- `ClientHelloIntervalSeconds`：自动握手间隔。
+- `MaxAutoHelloAttempts`：自动握手最大次数，成功后停止。
+- `RequireAllPlayersBeforeRestore`：是否要求所有历史成员回房后才允许恢复。
+- `MaxCheckpointCount`：最多保留多少个检查点。
+- `ReconnectJoinWindowSeconds`：重连窗口持续时间。
+- `EnableFileLogging`：是否启用 Mod 文件日志。
+
 ## 日志
 
-运行日志会写入：
+日志目录：
 
 ```text
-AddOns\SephiriaReconnect\logs
+Sephiria\AddOns\SephiriaReconnect\logs
 ```
 
-默认策略：
+默认日志策略：
 
 - 最多保留 8 个日志文件。
-- 单个日志超过 1 MB 自动轮转。
-- 删除 7 天前的旧日志。
-- 清理检查默认每 600 秒执行一次。
+- 单个日志超过 1 MB 后轮转。
+- 自动删除 7 天前的旧日志。
+- 每 600 秒执行一次日志清理检查。
 
-日志只捕获带 `[SephiriaReconnect]` 前缀的 Mod 日志，避免把游戏整体日志无限写入文件。
+排查联机问题时，优先查看：
 
-## 当前限制
+- 游戏主机的 `logs/reconnect-*.log`
+- 客户端的 `logs/reconnect-*.log`
+- Unity `Player.log`
 
-- 原版对“本局已经开始后新增玩家”的容错很弱。Mod 主要面向原本参与过本局、掉线后回来的玩家。
-- 中途拉入完全新玩家仍可能出现初始状态不完整、槽位缺少存档数据等问题。
-- 当前恢复目标是“本楼层入口状态”，不是掉线瞬间原地恢复。
-- Steam 邀请链路依赖 Steam overlay、Steam lobby 状态和双方游戏版本一致。
+如果客户端掉线并出现 `Unknown message id`，通常代表双方 Mod 版本不一致，或主机的网络消息处理器没有正确注册。请确认双方使用同一 release。
+
+## 已知限制
+
+- 原版对“本局已开始后新增玩家”的容错有限，本 Mod 主要面向原本参与过本局、掉线后回来的玩家。
+- 完全新玩家中途加入可能出现初始状态、槽位或同步数据不完整。
+- 本层恢复会重启 host，Steam lobby 和连接状态会经历一次重建。
+- 恢复目标是楼层入口检查点，不是实时存档。
+- Steam 邀请链路依赖 Steam overlay、Steam lobby 状态、双方游戏版本和网络状态。
 
 ## 开发
+
+需要本机存在《Sephiria》Managed 程序集。默认路径：
+
+```text
+E:\steam\steamapps\common\Sephiria\Sephiria_Data\Managed
+```
+
+如果游戏安装在其他目录，可以通过环境变量或 MSBuild 属性指定：
+
+```text
+SEPHIRIA_MANAGED_DIR=你的路径\Sephiria_Data\Managed
+```
 
 构建：
 
@@ -127,14 +188,21 @@ AddOns\SephiriaReconnect\logs
 dotnet build SephiriaReconnect.csproj -c Release
 ```
 
-构建产物会输出到：
+构建产物输出到：
 
 ```text
 dist
 ```
 
-项目源码主要位于：
+打包 release 时应包含：
 
 ```text
-src
+SephiriaReconnect.dll
+0Harmony.dll
+metadata.json
+config.json
+README.md
+assets
 ```
+
+`dist/`、`release/`、运行日志、检查点和本地会话文件不应提交到 Git 仓库。发布压缩包建议上传到 GitHub Releases。
