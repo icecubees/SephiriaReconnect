@@ -2964,8 +2964,20 @@ public sealed class ReconnectController : MonoBehaviour
             return false;
         }
 
+        if (!CanReuseReservedPlayerSlot(member.State))
+        {
+            return false;
+        }
+
         slot = member.PlayerSlot;
         return true;
+    }
+
+    private static bool CanReuseReservedPlayerSlot(ReconnectMemberState state)
+    {
+        return state == ReconnectMemberState.OfflineReserved ||
+            state == ReconnectMemberState.ReconnectPending ||
+            state == ReconnectMemberState.ReconnectedWaiting;
     }
 
     private void SaveHostSession()
