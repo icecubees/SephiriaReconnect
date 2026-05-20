@@ -66,6 +66,7 @@ public sealed class ReconnectController : MonoBehaviour
     private string lastObservedFloorGuid = "";
     private string statusLine = "正在初始化。";
     private LobbySettingsSnapshot pendingLobbySettings;
+    private float reconnectConnectionOpenUntil;
     private static readonly Vector3[] ScreenRectCorners = new Vector3[4];
     private static readonly MethodInfo DungeonSaveCurrentSessionDataMethod =
         typeof(DungeonManager).GetMethod("SaveCurrentSessionData", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -1145,7 +1146,7 @@ public sealed class ReconnectController : MonoBehaviour
         LobbyInfo lobby = GetLobbyInfo();
         if (NetworkServer.active)
         {
-            HorayNetworkAuthenticator.allowConnection = true;
+            OpenReconnectJoinWindow("invite");
         }
 
         if (!lobby.HasLobby || lobby.LobbyId == 0)
@@ -1171,6 +1172,7 @@ public sealed class ReconnectController : MonoBehaviour
             return;
         }
 
+        ApplyLobbySettingsSnapshot(lobby);
         OpenSteamInviteForLobby(lobby.LobbyId);
     }
 
@@ -1198,6 +1200,7 @@ public sealed class ReconnectController : MonoBehaviour
     {
         try
         {
+            OpenReconnectJoinWindow("open-invite");
             int sent = InviteRecordedDisconnectedPlayers(lobbyId);
             SteamFriends.ActivateGameOverlayInviteDialog(new CSteamID(lobbyId));
             statusLine = sent > 0 ? "已向历史掉线成员发送 Steam 邀请，并打开邀请窗口。" : "已打开 Steam 邀请窗口；没有可自动定向邀请的掉线成员。";
@@ -1373,6 +1376,7 @@ public sealed class ReconnectController : MonoBehaviour
         }
 
         AttachServerEvents();
+        MaintainReconnectJoinWindow();
         float now = Time.unscaledTime;
         if (hostSession == null || now >= nextHostSessionRefreshAt)
         {
@@ -1404,6 +1408,35 @@ public sealed class ReconnectController : MonoBehaviour
             nextSaveHostSessionAt = Time.unscaledTime + 10f;
             SaveHostSession();
         }
+    }
+
+    private void OpenReconnectJoinWindow(string reason)
+    {
+        if (!NetworkServer.active || config == null || !config.ForceOpenInDungeonJoinForReconnect)
+        {
+            return;
+        }
+
+        HorayNetworkAuthenticator.allowConnection = true;
+        HorayNetworkAuthenticator.AccessDeny_InDungeon = false;
+        float seconds = Mathf.Max(30, config.ReconnectJoinWindowSeconds);
+        float until = Time.unscaledTime + seconds;
+        if (until > reconnectConnectionOpenUntil)
+        {
+            reconnectConnectionOpenUntil = until;
+            Debug.Log("[SephiriaReconnect] Opened reconnect join window for " + seconds + "s: " + reason);
+        }
+    }
+
+    private void MaintainReconnectJoinWindow()
+    {
+        if (config == null || !config.ForceOpenInDungeonJoinForReconnect || Time.unscaledTime > reconnectConnectionOpenUntil)
+        {
+            return;
+        }
+
+        HorayNetworkAuthenticator.allowConnection = true;
+        HorayNetworkAuthenticator.AccessDeny_InDungeon = false;
     }
 
     private void TrackClientHello()
@@ -2018,6 +2051,7 @@ public sealed class ReconnectController : MonoBehaviour
         statusLine = "正在重启主机并回到检查点楼层……";
         NetworkManager.singleton.StartHost();
         yield return new WaitForSeconds(1f);
+        OpenReconnectJoinWindow("restore-host-started");
         EnsureHostSession();
         yield return EnsureSteamLobbyAndPublishAfterRestore();
         statusLine = "已请求恢复到检查点：" + checkpointId;
@@ -2146,7 +2180,7 @@ public sealed class ReconnectController : MonoBehaviour
 
         try
         {
-            HorayNetworkAuthenticator.allowConnection = true;
+            OpenReconnectJoinWindow("ensure-lobby-after-restore");
             LobbyInfo lobby = GetLobbyInfo();
             if (lobby.HasLobby && lobby.LobbyId != 0)
             {
@@ -2162,6 +2196,7 @@ public sealed class ReconnectController : MonoBehaviour
             if (lobby.Manager != null)
             {
                 lobby.Manager.Create();
+                OpenReconnectJoinWindow("create-lobby-after-restore");
                 statusLine = "已恢复本层，正在重新创建 Steam 房间。";
             }
         }
@@ -2178,6 +2213,7 @@ public sealed class ReconnectController : MonoBehaviour
             if (lobby.HasLobby && lobby.LobbyId != 0)
             {
                 ApplyLobbySettingsSnapshot(lobby);
+                OpenReconnectJoinWindow("lobby-ready-after-restore");
                 if (hostSession != null)
                 {
                     hostSession.LobbyId = lobby.LobbyId;
@@ -2232,6 +2268,11 @@ public sealed class ReconnectController : MonoBehaviour
         try
         {
             LobbyData data = lobby.Manager.Lobby;
+            if (config == null || config.ForceLobbyJoinableForReconnect)
+            {
+                lobby.Manager.SetJoinable(makeJoinable: true);
+            }
+
             if (pendingLobbySettings == null)
             {
                 data.Type = ELobbyType.k_ELobbyTypePrivate;
@@ -2258,7 +2299,7 @@ public sealed class ReconnectController : MonoBehaviour
                 data.MaxMembers = pendingLobbySettings.MaxMembers;
             }
 
-            data["Chapter"] = string.IsNullOrEmpty(pendingLobbySettings.Chapter)
+            data["Chapter"] = string.IsNullOrEmpty(pendingLobbySettings.Chapter) || !IsValidLobbyChapterValue(pendingLobbySettings.Chapter)
                 ? BuildLobbyChapterValue()
                 : pendingLobbySettings.Chapter;
 
@@ -2313,13 +2354,38 @@ public sealed class ReconnectController : MonoBehaviour
                     return race.actualChapterNum.ToString();
                 }
             }
+
+            if (SaveManager.CurrentRun != null)
+            {
+                RaceEntity race = RaceDatabase.FindById(SaveManager.CurrentRun.GetInt("CurrentGame", -1));
+                if (race != null)
+                {
+                    return race.actualChapterNum.ToString();
+                }
+            }
         }
         catch (Exception ex)
         {
             Debug.LogWarning("[SephiriaReconnect] Failed to build Steam lobby chapter value: " + ex.Message);
         }
 
-        return "ERR";
+        return "0";
+    }
+
+    private static bool IsValidLobbyChapterValue(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return false;
+        }
+
+        string[] parts = value.Split('-');
+        if (parts.Length == 1)
+        {
+            return int.TryParse(parts[0], out _);
+        }
+
+        return parts.Length == 2 && int.TryParse(parts[0], out _) && int.TryParse(parts[1], out _);
     }
 
     private void ForcePublishLobbySessionData()

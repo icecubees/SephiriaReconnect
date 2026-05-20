@@ -29,6 +29,9 @@ public sealed class ReconnectConfig
     public int HostPlayerRefreshSeconds = 3;
     public int HostLobbyRefreshSeconds = 10;
     public int HostLobbyPublishSeconds = 5;
+    public bool ForceOpenInDungeonJoinForReconnect = true;
+    public bool ForceLobbyJoinableForReconnect = true;
+    public int ReconnectJoinWindowSeconds = 180;
     public bool EnableFileLogging = true;
     public int MaxLogFiles = 8;
     public int MaxLogFileBytes = 1048576;
