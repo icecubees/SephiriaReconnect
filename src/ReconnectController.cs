@@ -67,6 +67,8 @@ public sealed class ReconnectController : MonoBehaviour
     private string statusLine = "正在初始化。";
     private LobbySettingsSnapshot pendingLobbySettings;
     private static readonly Vector3[] ScreenRectCorners = new Vector3[4];
+    private static readonly MethodInfo DungeonSaveCurrentSessionDataMethod =
+        typeof(DungeonManager).GetMethod("SaveCurrentSessionData", BindingFlags.Instance | BindingFlags.NonPublic);
 
     private void Awake()
     {
@@ -1180,6 +1182,7 @@ public sealed class ReconnectController : MonoBehaviour
             LobbyInfo lobby = GetLobbyInfo();
             if (lobby.HasLobby && lobby.LobbyId != 0)
             {
+                ApplyLobbySettingsSnapshot(lobby);
                 OpenSteamInviteForLobby(lobby.LobbyId);
                 yield break;
             }
@@ -1706,7 +1709,7 @@ public sealed class ReconnectController : MonoBehaviour
         }
 
         lastObservedFloorGuid = floorGuid;
-        CaptureCheckpoint("floor-entry", activateForRestore: true);
+        CaptureCheckpoint("floor-entry", activateForRestore: true, floorGuid);
     }
 
     private static bool ShouldCaptureFloorEntryCheckpoint(PlayerAvatar avatar, string floorGuid)
@@ -1752,7 +1755,7 @@ public sealed class ReconnectController : MonoBehaviour
         return true;
     }
 
-    private void CaptureCheckpoint(string reason, bool activateForRestore)
+    private void CaptureCheckpoint(string reason, bool activateForRestore, string floorGuidOverride = null)
     {
         if (!NetworkServer.active || hostSession == null)
         {
@@ -1768,6 +1771,9 @@ public sealed class ReconnectController : MonoBehaviour
 
         try
         {
+            string floorGuid = string.IsNullOrEmpty(floorGuidOverride) ? GetLocalFloorGuid() : floorGuidOverride;
+            FlushCurrentRunForCheckpoint(floorGuid);
+
             if (PlayerSpawner.MultiplayerList != null)
             {
                 foreach (PlayerSpawner spawner in PlayerSpawner.MultiplayerList)
@@ -1776,7 +1782,6 @@ public sealed class ReconnectController : MonoBehaviour
                 }
             }
 
-            string floorGuid = GetLocalFloorGuid();
             FloorData floor = FindFloor(floorGuid);
             string checkpointId = DateTime.UtcNow.ToString("yyyyMMddHHmmss") + "-" + ShortGuid();
             string snapshotPath = store.GetCheckpointSavePath(checkpointId);
@@ -1819,6 +1824,54 @@ public sealed class ReconnectController : MonoBehaviour
             statusLine = "保存检查点失败：" + ex.Message;
             Debug.LogError("[SephiriaReconnect] Checkpoint failed: " + ex);
         }
+    }
+
+    private static void FlushCurrentRunForCheckpoint(string floorGuid)
+    {
+        if (SaveManager.CurrentRun == null || string.IsNullOrEmpty(floorGuid))
+        {
+            return;
+        }
+
+        DungeonManager dungeon = DungeonManager.Instance;
+        if (dungeon != null)
+        {
+            try
+            {
+                DungeonSaveCurrentSessionDataMethod?.Invoke(dungeon, new object[] { floorGuid });
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning("[SephiriaReconnect] Failed to flush DungeonManager session data before checkpoint: " + ex.Message);
+            }
+        }
+
+        SaveManager.CurrentRun.SetBool("RunStarted", value: true);
+        SaveManager.CurrentRun.SetString("LastFloorGuid", floorGuid);
+        UpsertDungeonEnvironmentValue("IsInDungeon", 1);
+    }
+
+    private static void UpsertDungeonEnvironmentValue(string key, int value)
+    {
+        if (SaveManager.CurrentRun == null || string.IsNullOrEmpty(key))
+        {
+            return;
+        }
+
+        int count = SaveManager.CurrentRun.GetInt("DungeonEnvironmentCount", 0);
+        for (int i = 0; i < count; i++)
+        {
+            string currentKey = SaveManager.CurrentRun.GetString($"DungeonEnvironment{i}_Key", "");
+            if (string.Equals(currentKey, key, StringComparison.Ordinal))
+            {
+                SaveManager.CurrentRun.SetInt($"DungeonEnvironment{i}_Value", value);
+                return;
+            }
+        }
+
+        SaveManager.CurrentRun.SetString($"DungeonEnvironment{count}_Key", key);
+        SaveManager.CurrentRun.SetInt($"DungeonEnvironment{count}_Value", value);
+        SaveManager.CurrentRun.SetInt("DungeonEnvironmentCount", count + 1);
     }
 
     private void PruneCheckpoints()
@@ -1900,6 +1953,16 @@ public sealed class ReconnectController : MonoBehaviour
             return;
         }
 
+        if (!ValidateCheckpointSnapshot(checkpoint, out string invalidReason))
+        {
+            if (!TryRefreshCheckpointSnapshotFromCurrentRun(checkpoint) || !ValidateCheckpointSnapshot(checkpoint, out invalidReason))
+            {
+                statusLine = "检查点不可恢复：" + invalidReason;
+                ShowSystemMessage(statusLine);
+                return;
+            }
+        }
+
         try
         {
             string selectedProfile = GetSelectedSaveSlot();
@@ -1959,6 +2022,119 @@ public sealed class ReconnectController : MonoBehaviour
         yield return EnsureSteamLobbyAndPublishAfterRestore();
         statusLine = "已请求恢复到检查点：" + checkpointId;
         ShowSystemMessage("已请求恢复到检查点楼层。");
+    }
+
+    private bool TryRefreshCheckpointSnapshotFromCurrentRun(ReconnectCheckpointRecord checkpoint)
+    {
+        if (checkpoint == null || SaveManager.CurrentRun == null || !NetworkServer.active)
+        {
+            return false;
+        }
+
+        string localFloorGuid = GetLocalFloorGuid();
+        if (string.IsNullOrEmpty(localFloorGuid) || !string.Equals(localFloorGuid, checkpoint.FloorGuid, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        try
+        {
+            FlushCurrentRunForCheckpoint(checkpoint.FloorGuid);
+            if (PlayerSpawner.MultiplayerList != null)
+            {
+                foreach (PlayerSpawner spawner in PlayerSpawner.MultiplayerList)
+                {
+                    spawner?.SaveCurrentSessionData();
+                }
+            }
+
+            SaveData snapshot = SaveManager.CurrentRun.Copy();
+            snapshot.enableCloudSave = false;
+            snapshot.Save(checkpoint.SnapshotPath);
+            checkpoint.CheckpointHash = ComputeSaveHash(SaveManager.CurrentRun);
+            if (hostSession != null && hostSession.CurrentCheckpointId == checkpoint.CheckpointId)
+            {
+                hostSession.CurrentCheckpointHash = checkpoint.CheckpointHash;
+            }
+
+            store.SaveCheckpointMeta(checkpoint);
+            SaveHostSession();
+            Debug.LogWarning("[SephiriaReconnect] Repaired checkpoint snapshot before restore: " + checkpoint.CheckpointId);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning("[SephiriaReconnect] Failed to repair checkpoint snapshot before restore: " + ex.Message);
+            return false;
+        }
+    }
+
+    private static bool ValidateCheckpointSnapshot(ReconnectCheckpointRecord checkpoint, out string reason)
+    {
+        reason = "";
+        if (checkpoint == null || string.IsNullOrEmpty(checkpoint.SnapshotPath) || !File.Exists(checkpoint.SnapshotPath))
+        {
+            reason = "快照文件不存在。";
+            return false;
+        }
+
+        try
+        {
+            SaveData data = new SaveData(useEncryption: true);
+            if (!data.LoadFromString(File.ReadAllText(checkpoint.SnapshotPath)))
+            {
+                reason = "快照无法读取。";
+                return false;
+            }
+
+            if (!data.GetBool("RunStarted", fallback: false))
+            {
+                reason = "快照不是局内状态。";
+                return false;
+            }
+
+            string savedFloorGuid = data.GetString("LastFloorGuid", "");
+            if (string.IsNullOrEmpty(savedFloorGuid))
+            {
+                reason = "快照缺少楼层记录。";
+                return false;
+            }
+
+            if (!string.IsNullOrEmpty(checkpoint.FloorGuid) && !string.Equals(savedFloorGuid, checkpoint.FloorGuid, StringComparison.Ordinal))
+            {
+                reason = "快照楼层和检查点记录不一致。";
+                return false;
+            }
+
+            if (!SnapshotHasDungeonEnvironmentValue(data, "IsInDungeon", 1))
+            {
+                reason = "快照缺少地牢状态。";
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            reason = ex.Message;
+            return false;
+        }
+    }
+
+    private static bool SnapshotHasDungeonEnvironmentValue(SaveData data, string key, int value)
+    {
+        int count = data.GetInt("DungeonEnvironmentCount", 0);
+        for (int i = 0; i < count; i++)
+        {
+            string currentKey = data.GetString($"DungeonEnvironment{i}_Key", "");
+            int currentValue = data.GetInt($"DungeonEnvironment{i}_Value", 0);
+            if (string.Equals(currentKey, key, StringComparison.Ordinal) && currentValue == value)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private IEnumerator EnsureSteamLobbyAndPublishAfterRestore()
@@ -2060,6 +2236,9 @@ public sealed class ReconnectController : MonoBehaviour
             {
                 data.Type = ELobbyType.k_ELobbyTypePrivate;
                 data.MaxMembers = 4;
+                data.GameVersion = Application.version;
+                data.Name = BuildFallbackLobbyName();
+                data["Chapter"] = BuildLobbyChapterValue();
                 data.SetGameServer(UserData.Me.id);
                 return;
             }
@@ -2069,10 +2248,9 @@ public sealed class ReconnectController : MonoBehaviour
                 data.Name = pendingLobbySettings.Name;
             }
 
-            if (!string.IsNullOrEmpty(pendingLobbySettings.GameVersion))
-            {
-                data.GameVersion = pendingLobbySettings.GameVersion;
-            }
+            data.GameVersion = string.IsNullOrEmpty(pendingLobbySettings.GameVersion)
+                ? Application.version
+                : pendingLobbySettings.GameVersion;
 
             data.Type = pendingLobbySettings.Type;
             if (pendingLobbySettings.MaxMembers > 0)
@@ -2080,10 +2258,9 @@ public sealed class ReconnectController : MonoBehaviour
                 data.MaxMembers = pendingLobbySettings.MaxMembers;
             }
 
-            if (!string.IsNullOrEmpty(pendingLobbySettings.Chapter))
-            {
-                data["Chapter"] = pendingLobbySettings.Chapter;
-            }
+            data["Chapter"] = string.IsNullOrEmpty(pendingLobbySettings.Chapter)
+                ? BuildLobbyChapterValue()
+                : pendingLobbySettings.Chapter;
 
             data.SetGameServer(UserData.Me.id);
             pendingLobbySettings = null;
@@ -2092,6 +2269,57 @@ public sealed class ReconnectController : MonoBehaviour
         {
             Debug.LogWarning("[SephiriaReconnect] Failed to restore Steam lobby settings after restore: " + ex.Message);
         }
+    }
+
+    private static string BuildFallbackLobbyName()
+    {
+        string playerName = SafeLocalPlayerName();
+        return string.IsNullOrEmpty(playerName) ? "Sephiria Reconnect" : playerName + "的房间";
+    }
+
+    private static string BuildLobbyChapterValue()
+    {
+        try
+        {
+            DungeonManager dungeon = DungeonManager.Instance;
+            PlayerSpawner spawner = GetLocalSpawner();
+            PlayerAvatar avatar = spawner != null ? spawner.PlayerAvatar : null;
+            PlayerLocalDataStorage localData = avatar != null ? avatar.GetComponent<PlayerLocalDataStorage>() : null;
+
+            if (localData != null)
+            {
+                if (localData.mainQuestProgress < 11 && dungeon != null)
+                {
+                    RaceEntity race = RaceDatabase.FindById(dungeon.raceId);
+                    if (race != null)
+                    {
+                        return race.actualChapterNum.ToString();
+                    }
+                }
+
+                int chapterNum;
+                int subChapterNum;
+                if (QuestDatabase.TryGetCurrentMainQuestChapter(localData.GetCurrentMainQuestNode(), out chapterNum, out subChapterNum))
+                {
+                    return subChapterNum > 0 ? chapterNum + "-" + subChapterNum : chapterNum.ToString();
+                }
+            }
+
+            if (dungeon != null)
+            {
+                RaceEntity race = RaceDatabase.FindById(dungeon.raceId);
+                if (race != null)
+                {
+                    return race.actualChapterNum.ToString();
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning("[SephiriaReconnect] Failed to build Steam lobby chapter value: " + ex.Message);
+        }
+
+        return "ERR";
     }
 
     private void ForcePublishLobbySessionData()
