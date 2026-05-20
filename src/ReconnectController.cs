@@ -29,6 +29,7 @@ public sealed class ReconnectController : MonoBehaviour
     private bool panelOpen;
     private Canvas uiCanvas;
     private GameObject iconObject;
+    private Image iconFrameImage;
     private Image iconImage;
     private Text iconText;
     private Sprite iconSprite;
@@ -39,6 +40,7 @@ public sealed class ReconnectController : MonoBehaviour
     private Image panelImage;
     private Text panelText;
     private RectTransform iconRectTransform;
+    private RectTransform iconImageRectTransform;
     private RectTransform panelRectTransform;
     private readonly List<PanelActionButton> panelButtons = new List<PanelActionButton>();
     private Font uiFont;
@@ -300,16 +302,14 @@ public sealed class ReconnectController : MonoBehaviour
         canvasObject.AddComponent<GraphicRaycaster>();
         UpdateUiCanvasSortingOrder();
         float iconSize = GetIconSize();
-        iconObject = CreateVisualButton(canvasObject.transform, "ReconnectIcon", "", new Vector2(iconSize, iconSize));
+        iconObject = CreateReconnectIconButton(canvasObject.transform, new Vector2(iconSize, iconSize));
         ClickRelay clickRelay = iconObject.AddComponent<ClickRelay>();
         clickRelay.Initialize(TogglePanel);
         clickRelay.SetHoverAction(SetIconHover);
-        iconImage = iconObject.GetComponent<Image>();
-        iconText = iconObject.GetComponentInChildren<Text>();
-        if (iconText != null)
-        {
-            iconText.gameObject.SetActive(false);
-        }
+        iconFrameImage = iconObject.GetComponent<Image>();
+        iconImage = iconObject.transform.Find("ReconnectIconRabbit")?.GetComponent<Image>();
+        iconImageRectTransform = iconImage != null ? iconImage.GetComponent<RectTransform>() : null;
+        iconText = null;
 
         LoadReconnectIconSprites();
         ApplyReconnectIconVisual();
@@ -363,6 +363,7 @@ public sealed class ReconnectController : MonoBehaviour
         DestroyIconSprites();
         uiCanvas = null;
         iconObject = null;
+        iconFrameImage = null;
         iconImage = null;
         iconText = null;
         iconSprite = null;
@@ -371,6 +372,7 @@ public sealed class ReconnectController : MonoBehaviour
         iconDisabledSprite = null;
         iconHovered = false;
         iconRectTransform = null;
+        iconImageRectTransform = null;
         panelRectTransform = null;
         panelObject = null;
         panelImage = null;
@@ -437,6 +439,12 @@ public sealed class ReconnectController : MonoBehaviour
         {
             panelObject.SetActive(panelOpen);
         }
+
+        if (panelOpen && EventSystem.current != null && iconObject != null)
+        {
+            EventSystem.current.SetSelectedGameObject(iconObject);
+        }
+
         RefreshUi();
     }
 
@@ -473,11 +481,6 @@ public sealed class ReconnectController : MonoBehaviour
         Rect unionRect = default;
 
         TryIncludeHudMenuButtonsInCluster(ref unionRect, ref found);
-        if (found)
-        {
-            return TryPlaceIconAfterScreenRect(unionRect);
-        }
-
         TryIncludeLowerLeftGraphicsInCluster(ref unionRect, ref found);
         return found && TryPlaceIconAfterScreenRect(unionRect);
     }
@@ -581,6 +584,7 @@ public sealed class ReconnectController : MonoBehaviour
         iconRectTransform.localRotation = Quaternion.identity;
         float iconSize = GetIconSizeForHud(lowerLeftHudRect);
         iconRectTransform.sizeDelta = new Vector2(iconSize, iconSize);
+        UpdateReconnectIconInnerLayout(iconSize);
         iconRectTransform.SetAsLastSibling();
 
         float desiredX = Mathf.Clamp(lowerLeftHudRect.xMax + config.IconGap, 4f, Screen.width - iconRectTransform.sizeDelta.x - 4f);
@@ -779,6 +783,54 @@ public sealed class ReconnectController : MonoBehaviour
         return buttonObject;
     }
 
+    private GameObject CreateReconnectIconButton(Transform parent, Vector2 size)
+    {
+        GameObject buttonObject = new GameObject("ReconnectIcon");
+        buttonObject.transform.SetParent(parent, false);
+
+        Image frameImage = buttonObject.AddComponent<Image>();
+        frameImage.raycastTarget = true;
+        frameImage.color = new Color(0f, 0f, 0f, 0.95f);
+
+        RectTransform frameRect = buttonObject.GetComponent<RectTransform>();
+        frameRect.sizeDelta = size;
+
+        UI_HorayButton button = buttonObject.AddComponent<UI_HorayButton>();
+        button.targetGraphic = frameImage;
+        button.transition = Selectable.Transition.SpriteSwap;
+        button.allowSubmitInput = false;
+
+        GameObject rabbitObject = new GameObject("ReconnectIconRabbit");
+        rabbitObject.transform.SetParent(buttonObject.transform, false);
+        Image rabbitImage = rabbitObject.AddComponent<Image>();
+        rabbitImage.raycastTarget = false;
+        rabbitImage.color = Color.white;
+        rabbitImage.preserveAspect = true;
+
+        RectTransform rabbitRect = rabbitObject.GetComponent<RectTransform>();
+        rabbitRect.anchorMin = Vector2.zero;
+        rabbitRect.anchorMax = Vector2.one;
+        rabbitRect.pivot = new Vector2(0.5f, 0.5f);
+        ApplyReconnectIconPadding(rabbitRect, Mathf.Min(size.x, size.y));
+
+        return buttonObject;
+    }
+
+    private void UpdateReconnectIconInnerLayout(float iconSize)
+    {
+        if (iconImageRectTransform != null)
+        {
+            ApplyReconnectIconPadding(iconImageRectTransform, iconSize);
+        }
+    }
+
+    private static void ApplyReconnectIconPadding(RectTransform rect, float iconSize)
+    {
+        float inset = Mathf.Clamp(Mathf.Round(iconSize * 0.08f), 3f, 6f);
+        rect.offsetMin = new Vector2(inset, inset);
+        rect.offsetMax = new Vector2(-inset, -inset);
+    }
+
     private Text CreateText(Transform parent, string name, int fontSize, TextAnchor alignment)
     {
         GameObject textObject = new GameObject(name);
@@ -835,10 +887,14 @@ public sealed class ReconnectController : MonoBehaviour
             Image sourceImage = styleButton.targetGraphic as Image ?? styleButton.GetComponent<Image>();
             if (sourceImage != null)
             {
-                if (iconImage != null)
+                if (iconFrameImage != null)
                 {
-                    iconImage.raycastTarget = true;
+                    CopyImageStyle(sourceImage, iconFrameImage);
+                    iconFrameImage.raycastTarget = true;
                 }
+
+                UI_HorayButton reconnectButton = iconObject != null ? iconObject.GetComponent<UI_HorayButton>() : null;
+                CopyButtonStyle(styleButton, reconnectButton);
 
                 for (int i = 0; i < panelButtons.Count; i++)
                 {
@@ -949,6 +1005,25 @@ public sealed class ReconnectController : MonoBehaviour
         target.preserveAspect = source.preserveAspect;
     }
 
+    private static void CopyButtonStyle(UI_HorayButton source, UI_HorayButton target)
+    {
+        if (source == null || target == null)
+        {
+            return;
+        }
+
+        target.transition = source.transition;
+        target.colors = source.colors;
+        target.spriteState = source.spriteState;
+        target.animationTriggers = source.animationTriggers;
+        target.interactable = source.interactable;
+        target.allowSubmitInput = false;
+
+        Navigation navigation = target.navigation;
+        navigation.mode = Navigation.Mode.None;
+        target.navigation = navigation;
+    }
+
     private void SetIconHover(bool hover)
     {
         iconHovered = hover;
@@ -969,7 +1044,7 @@ public sealed class ReconnectController : MonoBehaviour
         iconImage.color = Color.white;
         if (iconRectTransform != null)
         {
-            iconRectTransform.localScale = iconHovered ? new Vector3(1.08f, 1.08f, 1f) : Vector3.one;
+            iconRectTransform.localScale = Vector3.one;
         }
     }
 
