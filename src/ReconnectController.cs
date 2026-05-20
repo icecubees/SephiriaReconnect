@@ -67,6 +67,9 @@ public sealed class ReconnectController : MonoBehaviour
     private string statusLine = "正在初始化。";
     private LobbySettingsSnapshot pendingLobbySettings;
     private float reconnectConnectionOpenUntil;
+    private bool reconnectJoinWindowOpen;
+    private bool reconnectPreviousAllowConnection;
+    private bool reconnectPreviousAccessDenyInDungeon;
     private static readonly Vector3[] ScreenRectCorners = new Vector3[4];
     private static readonly MethodInfo DungeonSaveCurrentSessionDataMethod =
         typeof(DungeonManager).GetMethod("SaveCurrentSessionData", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -1371,6 +1374,14 @@ public sealed class ReconnectController : MonoBehaviour
         wasServerActive = serverActive;
         if (!serverActive)
         {
+            if (reconnectJoinWindowOpen)
+            {
+                CloseReconnectJoinWindow();
+            }
+            else
+            {
+                ResetReconnectJoinWindowState();
+            }
             DetachServerEvents();
             return;
         }
@@ -1417,6 +1428,13 @@ public sealed class ReconnectController : MonoBehaviour
             return;
         }
 
+        if (!reconnectJoinWindowOpen)
+        {
+            reconnectPreviousAllowConnection = HorayNetworkAuthenticator.allowConnection;
+            reconnectPreviousAccessDenyInDungeon = HorayNetworkAuthenticator.AccessDeny_InDungeon;
+            reconnectJoinWindowOpen = true;
+        }
+
         HorayNetworkAuthenticator.allowConnection = true;
         HorayNetworkAuthenticator.AccessDeny_InDungeon = false;
         float seconds = Mathf.Max(30, config.ReconnectJoinWindowSeconds);
@@ -1430,13 +1448,76 @@ public sealed class ReconnectController : MonoBehaviour
 
     private void MaintainReconnectJoinWindow()
     {
+        if (!reconnectJoinWindowOpen)
+        {
+            return;
+        }
+
         if (config == null || !config.ForceOpenInDungeonJoinForReconnect || Time.unscaledTime > reconnectConnectionOpenUntil)
         {
+            CloseReconnectJoinWindow();
             return;
         }
 
         HorayNetworkAuthenticator.allowConnection = true;
         HorayNetworkAuthenticator.AccessDeny_InDungeon = false;
+    }
+
+    private void CloseReconnectJoinWindow()
+    {
+        if (!reconnectJoinWindowOpen)
+        {
+            return;
+        }
+
+        HorayNetworkAuthenticator.allowConnection = reconnectPreviousAllowConnection;
+        HorayNetworkAuthenticator.AccessDeny_InDungeon = ShouldDenyJoinBecauseInDungeon()
+            ? true
+            : reconnectPreviousAccessDenyInDungeon;
+        reconnectJoinWindowOpen = false;
+        reconnectConnectionOpenUntil = 0f;
+        RestoreLobbyJoinableAfterReconnectWindow();
+        Debug.Log("[SephiriaReconnect] Closed reconnect join window.");
+    }
+
+    private void ResetReconnectJoinWindowState()
+    {
+        reconnectJoinWindowOpen = false;
+        reconnectConnectionOpenUntil = 0f;
+    }
+
+    private void RestoreLobbyJoinableAfterReconnectWindow()
+    {
+        if (config == null || !config.ForceLobbyJoinableForReconnect || !ShouldDenyJoinBecauseInDungeon())
+        {
+            return;
+        }
+
+        try
+        {
+            LobbyInfo lobby = GetLobbyInfo();
+            if (lobby.HasLobby && lobby.Manager != null)
+            {
+                lobby.Manager.SetJoinable(makeJoinable: false);
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning("[SephiriaReconnect] Failed to restore Steam lobby joinable state: " + ex.Message);
+        }
+    }
+
+    private static bool ShouldDenyJoinBecauseInDungeon()
+    {
+        try
+        {
+            return DungeonManager.Instance != null &&
+                DungeonManager.Instance.dungeonEnvironment.GetValueOrDefault("IsInDungeon", 0) != 0;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private void TrackClientHello()
