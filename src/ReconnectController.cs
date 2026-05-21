@@ -105,6 +105,7 @@ public sealed class ReconnectController : MonoBehaviour
         store.SaveConfig(config);
         hostSession = store.LoadHostSession();
         lastSession = store.LoadLastSession();
+        ReconnectMessageSerializers.Register();
         RegisterMessageHandlers();
         if (ShouldShowReconnectUi())
         {
@@ -1660,7 +1661,15 @@ public sealed class ReconnectController : MonoBehaviour
 
     private void SendHelloButton()
     {
-        SendHello(reconnectAttempt: true);
+        if (NetworkServer.active)
+        {
+            statusLine = "房主不需要发送握手；请让成员更新 Mod 后重新加入或点击成员端握手。";
+            ReconnectLogger.Info("Hello button ignored on host.");
+            ShowSystemMessage(statusLine);
+            return;
+        }
+
+        SendHello(ShouldAttemptReconnectHello());
     }
 
     private void OpenSteamReconnectInvite()
@@ -1766,7 +1775,17 @@ public sealed class ReconnectController : MonoBehaviour
 
             try
             {
-                if (SteamFriends.InviteUserToGame(new CSteamID(member.SteamId), connectString))
+                bool invited = TryInviteUserToLobby(lobbyId, member.SteamId);
+                if (!invited)
+                {
+                    invited = SteamFriends.InviteUserToGame(new CSteamID(member.SteamId), connectString);
+                    if (invited)
+                    {
+                        ReconnectLogger.Info("Sent fallback Steam game invite. " + DescribeMember(member) + " lobby=" + lobbyId);
+                    }
+                }
+
+                if (invited)
                 {
                     sent++;
                     member.State = ReconnectMemberState.ReconnectPending;
@@ -1774,7 +1793,7 @@ public sealed class ReconnectController : MonoBehaviour
                 }
                 else
                 {
-                    ReconnectLogger.Warning("Steam InviteUserToGame returned false. " + DescribeMember(member) + " lobby=" + lobbyId);
+                    ReconnectLogger.Warning("Steam targeted invite returned false. " + DescribeMember(member) + " lobby=" + lobbyId);
                 }
             }
             catch (Exception ex)
@@ -1789,6 +1808,29 @@ public sealed class ReconnectController : MonoBehaviour
         }
 
         return sent;
+    }
+
+    private static bool TryInviteUserToLobby(ulong lobbyId, ulong steamId)
+    {
+        try
+        {
+            bool invited = SteamMatchmaking.InviteUserToLobby(new CSteamID(lobbyId), new CSteamID(steamId));
+            if (invited)
+            {
+                ReconnectLogger.Info("Sent Steam lobby invite. steam=" + steamId + " lobby=" + lobbyId);
+            }
+            else
+            {
+                ReconnectLogger.Warning("Steam InviteUserToLobby returned false. steam=" + steamId + " lobby=" + lobbyId);
+            }
+
+            return invited;
+        }
+        catch (Exception ex)
+        {
+            ReconnectLogger.Warning("Steam InviteUserToLobby failed. steam=" + steamId + " lobby=" + lobbyId + " error=" + ex.Message);
+            return false;
+        }
     }
 
     private bool HasOfflineReservedMember()
@@ -2147,11 +2189,6 @@ public sealed class ReconnectController : MonoBehaviour
             return;
         }
 
-        if (!ShouldAttemptReconnectHello())
-        {
-            return;
-        }
-
         if (Time.unscaledTime >= nextHelloAt)
         {
             if (autoHelloAttempts >= Mathf.Max(1, config.MaxAutoHelloAttempts))
@@ -2159,10 +2196,11 @@ public sealed class ReconnectController : MonoBehaviour
                 return;
             }
 
+            bool reconnectAttempt = ShouldAttemptReconnectHello();
             nextHelloAt = Time.unscaledTime + Mathf.Max(5, config.ClientHelloIntervalSeconds);
             autoHelloAttempts++;
-            ReconnectLogger.Info("Auto hello attempt " + autoHelloAttempts + "/" + Mathf.Max(1, config.MaxAutoHelloAttempts) + ".");
-            SendHello(reconnectAttempt: true);
+            ReconnectLogger.Info("Auto " + (reconnectAttempt ? "reconnect" : "session") + " hello attempt " + autoHelloAttempts + "/" + Mathf.Max(1, config.MaxAutoHelloAttempts) + ".");
+            SendHello(reconnectAttempt);
         }
     }
 
@@ -3588,7 +3626,7 @@ public sealed class ReconnectController : MonoBehaviour
         {
             ReconnectLogger.Info("Sending hello. " + DescribeHello(msg) + " lobbySession=" + Short(lobbySessionId) + " " + DescribeLobby(lobby));
             NetworkClient.Send(msg);
-            statusLine = "已发送重连握手。";
+            statusLine = reconnectAttempt ? "已发送重连握手。" : "已发送联机会话握手。";
         }
         catch (Exception ex)
         {
