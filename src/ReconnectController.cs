@@ -44,6 +44,7 @@ public sealed class ReconnectController : MonoBehaviour
     private readonly List<PanelActionButton> panelButtons = new List<PanelActionButton>();
     private Font uiFont;
     private UI_HUDMenu cachedHudMenu;
+    private Transform iconHudParent;
     private bool gameStyleApplied;
     private bool iconHovered;
     private float nextHelloAt;
@@ -179,7 +180,30 @@ public sealed class ReconnectController : MonoBehaviour
             iconObject.SetActive(visible);
         }
 
-        if (!visible && panelOpen)
+        bool interactive = visible && ShouldAllowReconnectIconInteraction();
+        if (iconImage != null)
+        {
+            iconImage.raycastTarget = interactive;
+        }
+
+        UI_HorayButton reconnectButton = iconObject != null ? iconObject.GetComponent<UI_HorayButton>() : null;
+        if (reconnectButton != null)
+        {
+            reconnectButton.interactable = visible;
+        }
+
+        if (!interactive && EventSystem.current != null && EventSystem.current.currentSelectedGameObject == iconObject)
+        {
+            EventSystem.current.SetSelectedGameObject(null);
+        }
+
+        if (!interactive && iconHovered)
+        {
+            iconHovered = false;
+            ApplyReconnectIconVisual();
+        }
+
+        if ((!visible || !interactive) && panelOpen)
         {
             panelOpen = false;
             if (panelObject != null)
@@ -205,10 +229,8 @@ public sealed class ReconnectController : MonoBehaviour
                     return false;
                 }
 
-                if (UIManager.Instance.CurrentControlStack != null && UIManager.Instance.CurrentControlStack.Count > 0)
-                {
-                    return false;
-                }
+                // Keep the icon visible while native panels are open. The native lower-left
+                // icons remain visible under the panel shade, but they stop accepting input.
             }
 
             if (ScreenFader.Instance != null && ScreenFader.Instance.IsFading)
@@ -242,15 +264,57 @@ public sealed class ReconnectController : MonoBehaviour
         }
     }
 
+    private static bool ShouldAllowReconnectIconInteraction()
+    {
+        try
+        {
+            return UIManager.Instance == null
+                || UIManager.Instance.CurrentControlStack == null
+                || UIManager.Instance.CurrentControlStack.Count <= 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private UI_HUDMenu GetCachedHudMenu()
     {
-        if (cachedHudMenu == null)
+        if (cachedHudMenu == null || !cachedHudMenu.gameObject.activeInHierarchy || !HasCoreHudButtons(cachedHudMenu))
         {
-            cachedHudMenu = FindFirstObjectByType<UI_HUDMenu>(FindObjectsInactive.Exclude);
+            cachedHudMenu = FindBestHudMenu();
             UpdateUiCanvasSortingOrder();
         }
 
         return cachedHudMenu;
+    }
+
+    private static UI_HUDMenu FindBestHudMenu()
+    {
+        UI_HUDMenu[] menus = FindObjectsByType<UI_HUDMenu>(FindObjectsInactive.Exclude, FindObjectsSortMode.None);
+        UI_HUDMenu fallback = null;
+        for (int i = 0; i < menus.Length; i++)
+        {
+            UI_HUDMenu menu = menus[i];
+            if (menu == null || !menu.gameObject.activeInHierarchy)
+            {
+                continue;
+            }
+
+            if (HasCoreHudButtons(menu))
+            {
+                return menu;
+            }
+
+            fallback ??= menu;
+        }
+
+        return fallback;
+    }
+
+    private static bool HasCoreHudButtons(UI_HUDMenu hudMenu)
+    {
+        return hudMenu != null && hudMenu.inventoryButton != null && hudMenu.statsButton != null;
     }
 
     private void UpdateUiCanvasSortingOrder()
@@ -286,6 +350,7 @@ public sealed class ReconnectController : MonoBehaviour
     {
         if (uiCanvas != null)
         {
+            EnsureReconnectIconInHudMenu();
             return;
         }
 
@@ -300,28 +365,10 @@ public sealed class ReconnectController : MonoBehaviour
         scaler.scaleFactor = 1f;
         canvasObject.AddComponent<GraphicRaycaster>();
         UpdateUiCanvasSortingOrder();
-        float iconSize = GetIconSize();
-        iconObject = CreateReconnectIconButton(canvasObject.transform, new Vector2(iconSize, iconSize));
-        UI_HorayButton reconnectButton = iconObject.GetComponent<UI_HorayButton>();
-        if (reconnectButton != null)
-        {
-            reconnectButton.onClick = new Button.ButtonClickedEvent();
-            reconnectButton.onClick.AddListener(TogglePanel);
-            reconnectButton.allowSubmitInput = false;
-        }
-
-        ClickRelay clickRelay = iconObject.GetComponent<ClickRelay>() ?? iconObject.AddComponent<ClickRelay>();
-        clickRelay.SetHoverAction(SetIconHover);
-        iconImage = iconObject.GetComponent<Image>();
         iconText = null;
 
         LoadReconnectIconSprites();
-        ApplyReconnectIconVisual();
-        iconRectTransform = iconObject.GetComponent<RectTransform>();
-        iconRectTransform.anchorMin = Vector2.zero;
-        iconRectTransform.anchorMax = Vector2.zero;
-        iconRectTransform.pivot = new Vector2(0f, 0f);
-        SetIconPosition(new Vector2(config.IconOffsetX, config.IconOffsetY));
+        EnsureReconnectIconInHudMenu();
 
         panelObject = new GameObject("ReconnectPanel");
         panelObject.transform.SetParent(canvasObject.transform, false);
@@ -333,7 +380,7 @@ public sealed class ReconnectController : MonoBehaviour
         panelRectTransform.anchorMax = Vector2.zero;
         panelRectTransform.pivot = new Vector2(0f, 0f);
         panelRectTransform.sizeDelta = new Vector2(460f, 360f);
-        panelRectTransform.anchoredPosition = new Vector2(config.IconOffsetX, config.IconOffsetY + iconSize + 10f);
+        panelRectTransform.anchoredPosition = new Vector2(config.IconOffsetX, config.IconOffsetY + GetIconSize() + 10f);
 
         panelText = CreateText(panelObject.transform, "ReconnectPanelText", 13, TextAnchor.UpperLeft);
         RectTransform textRect = panelText.GetComponent<RectTransform>();
@@ -376,6 +423,7 @@ public sealed class ReconnectController : MonoBehaviour
         iconDisabledSprite = null;
         iconHovered = false;
         iconRectTransform = null;
+        iconHudParent = null;
         panelRectTransform = null;
         panelObject = null;
         panelImage = null;
@@ -439,6 +487,7 @@ public sealed class ReconnectController : MonoBehaviour
     private void TogglePanel()
     {
         panelOpen = !panelOpen;
+        UpdatePanelPositionNearIcon();
         if (panelObject != null)
         {
             panelObject.SetActive(panelOpen);
@@ -467,16 +516,187 @@ public sealed class ReconnectController : MonoBehaviour
 
     private void AutoPlaceIconAfterLowerLeftHud()
     {
-        if (!config.AutoPlaceIconAfterLowerLeftHud || iconRectTransform == null || Time.unscaledTime < nextIconPlacementProbeAt)
+        if (Time.unscaledTime < nextIconPlacementProbeAt)
         {
             return;
         }
 
         nextIconPlacementProbeAt = Time.unscaledTime + 1f;
-        if (!TryAttachIconAfterLowerLeftHudCluster())
+        EnsureReconnectIconInHudMenu();
+        UpdatePanelPositionNearIcon();
+    }
+
+    private void EnsureReconnectIconInHudMenu()
+    {
+        UI_HUDMenu hudMenu = GetCachedHudMenu();
+        if (hudMenu == null || !hudMenu.gameObject.activeInHierarchy)
         {
-            SetIconPosition(new Vector2(config.IconOffsetX, config.IconOffsetY));
+            return;
         }
+
+        Transform hudParent = hudMenu.transform;
+        if (iconObject != null && iconHudParent == hudParent && iconObject.transform.parent == hudParent)
+        {
+            iconObject.transform.SetAsLastSibling();
+            ConfigureReconnectIconRect(hudMenu);
+            return;
+        }
+
+        if (iconObject != null)
+        {
+            Destroy(iconObject);
+            iconObject = null;
+            iconImage = null;
+            iconRectTransform = null;
+        }
+
+        DestroyDuplicateReconnectIcons(hudParent);
+        iconObject = CreateReconnectIconButton(hudParent, GetNativeHudIconSize(hudMenu));
+        iconHudParent = hudParent;
+        iconImage = iconObject.GetComponent<Image>();
+        iconRectTransform = iconObject.GetComponent<RectTransform>();
+
+        UI_HorayButton reconnectButton = iconObject.GetComponent<UI_HorayButton>();
+        if (reconnectButton != null)
+        {
+            reconnectButton.onClick = new Button.ButtonClickedEvent();
+            reconnectButton.onClick.AddListener(TogglePanel);
+            reconnectButton.allowSubmitInput = false;
+        }
+
+        ClickRelay clickRelay = iconObject.GetComponent<ClickRelay>() ?? iconObject.AddComponent<ClickRelay>();
+        clickRelay.SetHoverAction(SetIconHover);
+        ConfigureReconnectIconRect(hudMenu);
+        ApplyReconnectIconVisual();
+        UpdateUiCanvasSortingOrder();
+        UpdatePanelPositionNearIcon();
+    }
+
+    private static void DestroyDuplicateReconnectIcons(Transform hudParent)
+    {
+        if (hudParent == null)
+        {
+            return;
+        }
+
+        for (int i = hudParent.childCount - 1; i >= 0; i--)
+        {
+            Transform child = hudParent.GetChild(i);
+            if (child != null && child.name == "ReconnectIcon")
+            {
+                Destroy(child.gameObject);
+            }
+        }
+    }
+
+    private void ConfigureReconnectIconRect(UI_HUDMenu hudMenu)
+    {
+        if (iconRectTransform == null)
+        {
+            return;
+        }
+
+        iconRectTransform.anchorMin = Vector2.zero;
+        iconRectTransform.anchorMax = Vector2.zero;
+        iconRectTransform.pivot = new Vector2(0f, 0f);
+        iconRectTransform.localScale = Vector3.one;
+        iconRectTransform.localRotation = Quaternion.identity;
+        iconRectTransform.anchoredPosition = Vector2.zero;
+        iconRectTransform.sizeDelta = GetNativeHudIconSize(hudMenu);
+        iconRectTransform.SetAsLastSibling();
+    }
+
+    private static Vector2 GetNativeHudIconSize(UI_HUDMenu hudMenu)
+    {
+        float height = 21f;
+        if (hudMenu != null)
+        {
+            height = Mathf.Max(
+                GetHudButtonSize(hudMenu.inventoryButton).y,
+                GetHudButtonSize(hudMenu.statsButton).y,
+                GetHudButtonSize(hudMenu.passiveButton).y,
+                GetHudButtonSize(hudMenu.presetButton).y);
+        }
+
+        if (height <= 0f)
+        {
+            height = 21f;
+        }
+
+        return new Vector2(height, height);
+    }
+
+    private static Vector2 GetHudButtonSize(UI_HorayButton button)
+    {
+        RectTransform rect = button != null ? button.transform as RectTransform : null;
+        return rect != null ? rect.sizeDelta : Vector2.zero;
+    }
+
+    private void UpdatePanelPositionNearIcon()
+    {
+        if (panelRectTransform == null)
+        {
+            return;
+        }
+
+        if (!TryGetHudClusterScreenRect(out Rect anchorRect))
+        {
+            Canvas iconCanvas = iconObject != null ? iconObject.GetComponentInParent<Canvas>() : null;
+            if (iconCanvas == null || iconRectTransform == null || !TryGetScreenRect(iconRectTransform, iconCanvas, out anchorRect))
+            {
+                return;
+            }
+        }
+
+        Vector2 panelSize = panelRectTransform.sizeDelta;
+        const float margin = 4f;
+        float maxX = Mathf.Max(margin, Screen.width - panelSize.x - margin);
+        float maxY = Mathf.Max(margin, Screen.height - panelSize.y - margin);
+        float x = maxX <= margin ? margin : Mathf.Clamp(anchorRect.xMin, margin, maxX);
+        float y = maxY <= margin ? margin : Mathf.Clamp(anchorRect.yMax + 10f, margin, maxY);
+        panelRectTransform.anchoredPosition = new Vector2(x, y);
+    }
+
+    private bool TryGetHudClusterScreenRect(out Rect clusterRect)
+    {
+        clusterRect = default;
+        bool found = false;
+        UI_HUDMenu hudMenu = GetCachedHudMenu();
+        Canvas canvas = hudMenu != null ? hudMenu.GetComponentInParent<Canvas>() : null;
+        if (canvas == null)
+        {
+            return false;
+        }
+
+        TryIncludeHudButtonScreenRect(hudMenu.inventoryButton, canvas, ref clusterRect, ref found);
+        TryIncludeHudButtonScreenRect(hudMenu.statsButton, canvas, ref clusterRect, ref found);
+        TryIncludeHudButtonScreenRect(hudMenu.passiveButton, canvas, ref clusterRect, ref found);
+        TryIncludeHudButtonScreenRect(hudMenu.presetButton, canvas, ref clusterRect, ref found);
+        if (iconRectTransform != null && iconRectTransform.gameObject.activeInHierarchy && TryGetScreenRect(iconRectTransform, canvas, out Rect iconRect))
+        {
+            IncludeScreenRect(ref clusterRect, ref found, iconRect);
+        }
+
+        return found;
+    }
+
+    private static void TryIncludeHudButtonScreenRect(UI_HorayButton button, Canvas canvas, ref Rect clusterRect, ref bool found)
+    {
+        RectTransform rect = button != null && button.gameObject.activeInHierarchy ? button.transform as RectTransform : null;
+        if (rect != null && TryGetScreenRect(rect, canvas, out Rect screenRect))
+        {
+            IncludeScreenRect(ref clusterRect, ref found, screenRect);
+        }
+    }
+
+    private static void IncludeScreenRect(ref Rect unionRect, ref bool found, Rect screenRect)
+    {
+        unionRect = found ? Rect.MinMaxRect(
+            Mathf.Min(unionRect.xMin, screenRect.xMin),
+            Mathf.Min(unionRect.yMin, screenRect.yMin),
+            Mathf.Max(unionRect.xMax, screenRect.xMax),
+            Mathf.Max(unionRect.yMax, screenRect.yMax)) : screenRect;
+        found = true;
     }
 
     private bool TryAttachIconAfterLowerLeftHudCluster()
@@ -700,6 +920,7 @@ public sealed class ReconnectController : MonoBehaviour
         TryApplyGameUiStyle();
 
         ApplyReconnectIconVisual();
+        UpdatePanelPositionNearIcon();
 
         if (panelText == null || !panelOpen)
         {
@@ -798,6 +1019,14 @@ public sealed class ReconnectController : MonoBehaviour
 
         RectTransform rect = buttonObject.GetComponent<RectTransform>();
         rect.sizeDelta = size;
+
+        LayoutElement layoutElement = buttonObject.AddComponent<LayoutElement>();
+        layoutElement.minWidth = size.x;
+        layoutElement.minHeight = size.y;
+        layoutElement.preferredWidth = size.x;
+        layoutElement.preferredHeight = size.y;
+        layoutElement.flexibleWidth = 0f;
+        layoutElement.flexibleHeight = 0f;
 
         UI_HorayButton button = buttonObject.AddComponent<UI_HorayButton>();
         button.targetGraphic = image;
