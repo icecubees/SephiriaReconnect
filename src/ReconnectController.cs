@@ -34,6 +34,7 @@ public sealed class ReconnectController : MonoBehaviour
     private Sprite iconSprite;
     private Sprite iconHoverSprite;
     private Sprite iconOfflineSprite;
+    private Sprite iconOfflineHoverSprite;
     private Sprite iconDisabledSprite;
     private GameObject panelObject;
     private Image panelImage;
@@ -371,6 +372,7 @@ public sealed class ReconnectController : MonoBehaviour
         iconSprite = null;
         iconHoverSprite = null;
         iconOfflineSprite = null;
+        iconOfflineHoverSprite = null;
         iconDisabledSprite = null;
         iconHovered = false;
         iconRectTransform = null;
@@ -391,6 +393,7 @@ public sealed class ReconnectController : MonoBehaviour
         DestroyIconSprite(iconSprite, destroyedSprites, destroyedTextures);
         DestroyIconSprite(iconHoverSprite, destroyedSprites, destroyedTextures);
         DestroyIconSprite(iconOfflineSprite, destroyedSprites, destroyedTextures);
+        DestroyIconSprite(iconOfflineHoverSprite, destroyedSprites, destroyedTextures);
         DestroyIconSprite(iconDisabledSprite, destroyedSprites, destroyedTextures);
     }
 
@@ -995,7 +998,7 @@ public sealed class ReconnectController : MonoBehaviour
         if (button != null)
         {
             Sprite normalSprite = iconImage.sprite != null ? iconImage.sprite : iconSprite;
-            Sprite selectedSprite = iconHoverSprite != null ? iconHoverSprite : normalSprite;
+            Sprite selectedSprite = SelectReconnectIconSelectedSprite(normalSprite);
             SpriteState state = button.spriteState;
             state.highlightedSprite = selectedSprite;
             state.pressedSprite = selectedSprite;
@@ -1034,6 +1037,21 @@ public sealed class ReconnectController : MonoBehaviour
         return iconSprite;
     }
 
+    private Sprite SelectReconnectIconSelectedSprite(Sprite fallback)
+    {
+        if (HasOfflineReservedMember() && iconOfflineHoverSprite != null)
+        {
+            return iconOfflineHoverSprite;
+        }
+
+        if (iconHoverSprite != null)
+        {
+            return iconHoverSprite;
+        }
+
+        return fallback;
+    }
+
     private float GetIconSize()
     {
         if (config == null)
@@ -1059,6 +1077,7 @@ public sealed class ReconnectController : MonoBehaviour
         iconSprite = LoadReconnectIconSprite("reconnect-rabbit-framed-green.png") ?? LoadReconnectIconSprite("reconnect-rabbit-green.png") ?? CreateReconnectIconSprite(hover: false);
         iconHoverSprite = LoadReconnectIconSprite("reconnect-rabbit-framed-green-selected.png") ?? LoadReconnectIconSprite("reconnect-rabbit-green-hover.png") ?? CreateReconnectIconSprite(hover: true);
         iconOfflineSprite = LoadReconnectIconSprite("reconnect-rabbit-framed-amber.png") ?? LoadReconnectIconSprite("reconnect-rabbit-amber.png") ?? iconSprite;
+        iconOfflineHoverSprite = LoadReconnectIconSprite("reconnect-rabbit-framed-amber-selected.png") ?? iconHoverSprite;
         iconDisabledSprite = LoadReconnectIconSprite("reconnect-rabbit-framed-gray.png") ?? LoadReconnectIconSprite("reconnect-rabbit-gray.png") ?? iconSprite;
     }
 
