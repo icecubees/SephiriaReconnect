@@ -30,6 +30,7 @@ public sealed class ReconnectController : MonoBehaviour
     private Canvas uiCanvas;
     private GameObject iconObject;
     private Image iconImage;
+    private UI_HorayButton iconButton;
     private Text iconText;
     private Sprite iconSprite;
     private Sprite iconHoverSprite;
@@ -56,6 +57,7 @@ public sealed class ReconnectController : MonoBehaviour
     private float nextHostPlayerRefreshAt;
     private float nextHostLobbyRefreshAt;
     private float nextHostLobbyPublishAt;
+    private float nextPanelMemberRefreshAt;
     private bool lastHudVisible;
     private string lastPublishedLobbyState = "";
     private string lastSavedHostSessionState = "";
@@ -132,7 +134,10 @@ public sealed class ReconnectController : MonoBehaviour
         bool shouldShowUi = ShouldShowReconnectUi();
         if (shouldShowUi)
         {
-            EnsureUi();
+            if (uiCanvas == null)
+            {
+                EnsureUi();
+            }
         }
         else if (uiCanvas != null)
         {
@@ -150,9 +155,9 @@ public sealed class ReconnectController : MonoBehaviour
         }
 
         nextProbeAt = Time.unscaledTime + 1f;
-        RegisterMessageHandlers();
         TrackConnectionDrop();
         TrackHostSession();
+        RegisterMessageHandlers();
         TrackClientHello();
         if (uiCanvas != null)
         {
@@ -181,15 +186,14 @@ public sealed class ReconnectController : MonoBehaviour
         }
 
         bool interactive = visible && ShouldAllowReconnectIconInteraction();
-        if (iconImage != null)
+        if (iconImage != null && iconImage.raycastTarget != interactive)
         {
             iconImage.raycastTarget = interactive;
         }
 
-        UI_HorayButton reconnectButton = iconObject != null ? iconObject.GetComponent<UI_HorayButton>() : null;
-        if (reconnectButton != null)
+        if (iconButton != null && iconButton.interactable != visible)
         {
-            reconnectButton.interactable = visible;
+            iconButton.interactable = visible;
         }
 
         if (!interactive && EventSystem.current != null && EventSystem.current.currentSelectedGameObject == iconObject)
@@ -350,7 +354,6 @@ public sealed class ReconnectController : MonoBehaviour
     {
         if (uiCanvas != null)
         {
-            EnsureReconnectIconInHudMenu();
             return;
         }
 
@@ -415,6 +418,7 @@ public sealed class ReconnectController : MonoBehaviour
         uiCanvas = null;
         iconObject = null;
         iconImage = null;
+        iconButton = null;
         iconText = null;
         iconSprite = null;
         iconHoverSprite = null;
@@ -493,6 +497,11 @@ public sealed class ReconnectController : MonoBehaviour
             panelObject.SetActive(panelOpen);
         }
 
+        if (panelOpen)
+        {
+            RefreshPanelMemberData(force: true);
+        }
+
         if (panelOpen && EventSystem.current != null && iconObject != null)
         {
             EventSystem.current.SetSelectedGameObject(iconObject);
@@ -537,8 +546,13 @@ public sealed class ReconnectController : MonoBehaviour
         Transform hudParent = hudMenu.transform;
         if (iconObject != null && iconHudParent == hudParent && iconObject.transform.parent == hudParent)
         {
-            iconObject.transform.SetAsLastSibling();
-            ConfigureReconnectIconRect(hudMenu);
+            bool changed = EnsureReconnectIconSiblingIsLast(hudParent);
+            changed |= ConfigureReconnectIconRect(hudMenu);
+            if (changed)
+            {
+                UpdatePanelPositionNearIcon();
+            }
+
             return;
         }
 
@@ -547,6 +561,7 @@ public sealed class ReconnectController : MonoBehaviour
             Destroy(iconObject);
             iconObject = null;
             iconImage = null;
+            iconButton = null;
             iconRectTransform = null;
         }
 
@@ -556,12 +571,12 @@ public sealed class ReconnectController : MonoBehaviour
         iconImage = iconObject.GetComponent<Image>();
         iconRectTransform = iconObject.GetComponent<RectTransform>();
 
-        UI_HorayButton reconnectButton = iconObject.GetComponent<UI_HorayButton>();
-        if (reconnectButton != null)
+        iconButton = iconObject.GetComponent<UI_HorayButton>();
+        if (iconButton != null)
         {
-            reconnectButton.onClick = new Button.ButtonClickedEvent();
-            reconnectButton.onClick.AddListener(TogglePanel);
-            reconnectButton.allowSubmitInput = false;
+            iconButton.onClick = new Button.ButtonClickedEvent();
+            iconButton.onClick.AddListener(TogglePanel);
+            iconButton.allowSubmitInput = false;
         }
 
         ClickRelay clickRelay = iconObject.GetComponent<ClickRelay>() ?? iconObject.AddComponent<ClickRelay>();
@@ -589,21 +604,86 @@ public sealed class ReconnectController : MonoBehaviour
         }
     }
 
-    private void ConfigureReconnectIconRect(UI_HUDMenu hudMenu)
+    private bool EnsureReconnectIconSiblingIsLast(Transform hudParent)
+    {
+        if (iconObject == null || hudParent == null)
+        {
+            return false;
+        }
+
+        int lastIndex = hudParent.childCount - 1;
+        if (lastIndex < 0 || iconObject.transform.GetSiblingIndex() == lastIndex)
+        {
+            return false;
+        }
+
+        iconObject.transform.SetAsLastSibling();
+        return true;
+    }
+
+    private bool ConfigureReconnectIconRect(UI_HUDMenu hudMenu)
     {
         if (iconRectTransform == null)
         {
-            return;
+            return false;
         }
 
-        iconRectTransform.anchorMin = Vector2.zero;
-        iconRectTransform.anchorMax = Vector2.zero;
-        iconRectTransform.pivot = new Vector2(0f, 0f);
-        iconRectTransform.localScale = Vector3.one;
-        iconRectTransform.localRotation = Quaternion.identity;
-        iconRectTransform.anchoredPosition = Vector2.zero;
-        iconRectTransform.sizeDelta = GetNativeHudIconSize(hudMenu);
-        iconRectTransform.SetAsLastSibling();
+        bool changed = false;
+        if (!Approximately(iconRectTransform.anchorMin, Vector2.zero))
+        {
+            iconRectTransform.anchorMin = Vector2.zero;
+            changed = true;
+        }
+
+        if (!Approximately(iconRectTransform.anchorMax, Vector2.zero))
+        {
+            iconRectTransform.anchorMax = Vector2.zero;
+            changed = true;
+        }
+
+        if (!Approximately(iconRectTransform.pivot, Vector2.zero))
+        {
+            iconRectTransform.pivot = Vector2.zero;
+            changed = true;
+        }
+
+        if (!Approximately(iconRectTransform.localScale, Vector3.one))
+        {
+            iconRectTransform.localScale = Vector3.one;
+            changed = true;
+        }
+
+        if (iconRectTransform.localRotation != Quaternion.identity)
+        {
+            iconRectTransform.localRotation = Quaternion.identity;
+            changed = true;
+        }
+
+        if (!Approximately(iconRectTransform.anchoredPosition, Vector2.zero))
+        {
+            iconRectTransform.anchoredPosition = Vector2.zero;
+            changed = true;
+        }
+
+        Vector2 desiredSize = GetNativeHudIconSize(hudMenu);
+        if (!Approximately(iconRectTransform.sizeDelta, desiredSize))
+        {
+            iconRectTransform.sizeDelta = desiredSize;
+            changed = true;
+        }
+
+        changed |= EnsureReconnectIconSiblingIsLast(iconRectTransform.parent);
+        return changed;
+    }
+
+    private static bool Approximately(Vector2 current, Vector2 desired)
+    {
+        return Vector2.SqrMagnitude(current - desired) <= 0.0001f;
+    }
+
+    private static bool Approximately(Vector3 current, Vector3 desired)
+    {
+        return Vector3.SqrMagnitude(current - desired) <= 0.0001f;
     }
 
     private static Vector2 GetNativeHudIconSize(UI_HUDMenu hudMenu)
@@ -927,6 +1007,7 @@ public sealed class ReconnectController : MonoBehaviour
             return;
         }
 
+        RefreshPanelMemberData(force: false);
         LobbyInfo lobby = GetLobbyInfo();
         StringBuilder builder = new StringBuilder();
         builder.AppendLine("状态：" + statusLine);
@@ -944,10 +1025,16 @@ public sealed class ReconnectController : MonoBehaviour
             builder.AppendLine("会话：" + hostSession.SessionId);
             builder.AppendLine("检查点：" + NullToDash(hostSession.CurrentCheckpointId));
             builder.AppendLine("检查点哈希：" + Short(hostSession.CurrentCheckpointHash));
-            builder.AppendLine("队员：");
-            foreach (ReconnectMemberRecord member in hostSession.Members.Values.OrderBy(m => m.PlayerSlot).ThenBy(m => m.SteamId))
+            builder.AppendLine("联机成员：");
+            List<ReconnectMemberRecord> members = GetPanelMembers();
+            if (members.Count == 0)
             {
-                builder.AppendLine("  槽位 " + member.PlayerSlot + "  Steam " + member.SteamId + "  " + DescribeMemberState(member.State) + "  " + DescribeMemberMod(member) + "  " + member.PlayerName);
+                builder.AppendLine("  暂无已记录成员");
+            }
+
+            foreach (ReconnectMemberRecord member in members)
+            {
+                builder.AppendLine("  " + FormatPanelMember(member));
             }
         }
 
@@ -965,6 +1052,69 @@ public sealed class ReconnectController : MonoBehaviour
         builder.AppendLine("本层恢复点只在当前会话内保留；进入新局会清理旧检查点。");
 
         panelText.text = builder.ToString();
+    }
+
+    private void RefreshPanelMemberData(bool force)
+    {
+        if (!NetworkServer.active || hostSession == null)
+        {
+            return;
+        }
+
+        hostSession.Members ??= new Dictionary<ulong, ReconnectMemberRecord>();
+        if (!force && Time.unscaledTime < nextPanelMemberRefreshAt)
+        {
+            return;
+        }
+
+        nextPanelMemberRefreshAt = Time.unscaledTime + 3f;
+        RefreshHostMembersFromPlayerSpawners();
+        RefreshHostMembersFromLobby();
+        SaveHostSession();
+    }
+
+    private List<ReconnectMemberRecord> GetPanelMembers()
+    {
+        if (hostSession?.Members == null)
+        {
+            return new List<ReconnectMemberRecord>();
+        }
+
+        return hostSession.Members.Values
+            .Where(member => member != null && member.State != ReconnectMemberState.Removed)
+            .OrderBy(member => member.PlayerSlot < 0 ? int.MaxValue : member.PlayerSlot)
+            .ThenBy(member => GetMemberDisplayName(member), StringComparer.OrdinalIgnoreCase)
+            .ThenBy(member => member.SteamId)
+            .ToList();
+    }
+
+    private static string FormatPanelMember(ReconnectMemberRecord member)
+    {
+        string slot = member.PlayerSlot >= 0 ? member.PlayerSlot.ToString() : "?";
+        string playerName = !string.IsNullOrWhiteSpace(member?.PlayerName) ? member.PlayerName.Trim() : "未知";
+        string steamName = !string.IsNullOrWhiteSpace(member?.SteamName) ? member.SteamName.Trim() : "未知";
+        string steamId = member != null && member.SteamId != 0 ? member.SteamId.ToString() : "未知";
+        return "槽位 " + slot + "  游戏名 " + playerName + "  Steam昵称 " + steamName + "  SteamID " + steamId + "  " + DescribeMemberState(member.State) + "  " + DescribeMemberMod(member);
+    }
+
+    private static string GetMemberDisplayName(ReconnectMemberRecord member)
+    {
+        if (member == null)
+        {
+            return "未知成员";
+        }
+
+        if (!string.IsNullOrWhiteSpace(member.PlayerName))
+        {
+            return member.PlayerName.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(member.SteamName))
+        {
+            return member.SteamName.Trim();
+        }
+
+        return "Steam " + member.SteamId;
     }
 
     private void AddPanelButton(string text, Vector2 anchoredPosition, Vector2 size, UnityEngine.Events.UnityAction action)
@@ -1218,29 +1368,72 @@ public sealed class ReconnectController : MonoBehaviour
             return;
         }
 
-        iconImage.sprite = SelectReconnectIconSprite();
-        iconImage.type = Image.Type.Simple;
-        iconImage.preserveAspect = true;
-        iconImage.material = null;
-        iconImage.color = Color.white;
-        UI_HorayButton button = iconObject != null ? iconObject.GetComponent<UI_HorayButton>() : null;
-        if (button != null)
+        Sprite desiredSprite = SelectReconnectIconSprite();
+        if (iconImage.sprite != desiredSprite)
+        {
+            iconImage.sprite = desiredSprite;
+        }
+
+        if (iconImage.type != Image.Type.Simple)
+        {
+            iconImage.type = Image.Type.Simple;
+        }
+
+        if (!iconImage.preserveAspect)
+        {
+            iconImage.preserveAspect = true;
+        }
+
+        if (iconImage.material != null)
+        {
+            iconImage.material = null;
+        }
+
+        if (iconImage.color != Color.white)
+        {
+            iconImage.color = Color.white;
+        }
+
+        if (iconButton != null)
         {
             Sprite normalSprite = iconImage.sprite != null ? iconImage.sprite : iconSprite;
             Sprite selectedSprite = SelectReconnectIconSelectedSprite(normalSprite);
-            SpriteState state = button.spriteState;
-            state.highlightedSprite = selectedSprite;
-            state.pressedSprite = selectedSprite;
-            state.selectedSprite = selectedSprite;
-            state.disabledSprite = iconDisabledSprite != null ? iconDisabledSprite : normalSprite;
-            button.spriteState = state;
-            button.targetGraphic = iconImage;
-            button.transition = Selectable.Transition.SpriteSwap;
-            button.interactable = true;
-            button.allowSubmitInput = false;
+            SpriteState state = iconButton.spriteState;
+            Sprite disabledSprite = iconDisabledSprite != null ? iconDisabledSprite : normalSprite;
+            if (state.highlightedSprite != selectedSprite ||
+                state.pressedSprite != selectedSprite ||
+                state.selectedSprite != selectedSprite ||
+                state.disabledSprite != disabledSprite)
+            {
+                state.highlightedSprite = selectedSprite;
+                state.pressedSprite = selectedSprite;
+                state.selectedSprite = selectedSprite;
+                state.disabledSprite = disabledSprite;
+                iconButton.spriteState = state;
+            }
+
+            if (iconButton.targetGraphic != iconImage)
+            {
+                iconButton.targetGraphic = iconImage;
+            }
+
+            if (iconButton.transition != Selectable.Transition.SpriteSwap)
+            {
+                iconButton.transition = Selectable.Transition.SpriteSwap;
+            }
+
+            if (!iconButton.interactable)
+            {
+                iconButton.interactable = true;
+            }
+
+            if (iconButton.allowSubmitInput)
+            {
+                iconButton.allowSubmitInput = false;
+            }
         }
 
-        if (iconRectTransform != null)
+        if (iconRectTransform != null && !Approximately(iconRectTransform.localScale, Vector3.one))
         {
             iconRectTransform.localScale = Vector3.one;
         }
@@ -2080,7 +2273,7 @@ public sealed class ReconnectController : MonoBehaviour
             RememberConnectionSteamId(spawner);
             ReconnectMemberState previousState = member.State;
             int previousSlot = member.PlayerSlot;
-            member.PlayerName = SafePlayerName(spawner);
+            UpdateMemberName(member, SafePlayerName(spawner));
             if (member.PlayerSlot < 0)
             {
                 member.PlayerSlot = spawner.currentPlayerIdxForSave >= 0 ? spawner.currentPlayerIdxForSave : spawner.currentPlayerIdx;
@@ -2134,10 +2327,7 @@ public sealed class ReconnectController : MonoBehaviour
 
                 bool knownBefore = hostSession.Members.ContainsKey(steamId);
                 ReconnectMemberRecord member = GetOrCreateMember(steamId);
-                if (string.IsNullOrEmpty(member.PlayerName))
-                {
-                    member.PlayerName = user.Nickname;
-                }
+                UpdateMemberSteamName(member, user.Nickname);
 
                 member.SaveSlotId = hostSession.SaveSlotId;
                 member.RunId = hostSession.RunId;
@@ -3419,7 +3609,7 @@ public sealed class ReconnectController : MonoBehaviour
             ReconnectMemberRecord member = GetOrCreateMember(msg.playerSteamId);
             ReconnectMemberState previousState = member.State;
             int previousSlot = member.PlayerSlot;
-            member.PlayerName = string.IsNullOrWhiteSpace(msg.playerName) ? member.PlayerName : msg.playerName;
+            UpdateMemberName(member, msg.playerName);
             member.ModInstalled = true;
             member.LastHelloUtc = DateTime.UtcNow;
             if (member.PlayerSlot < 0 && conn != null && conn.identity != null && conn.identity.TryGetComponent<PlayerSpawner>(out PlayerSpawner helloSpawner))
@@ -3587,7 +3777,7 @@ public sealed class ReconnectController : MonoBehaviour
         ReconnectMemberState previousState = member.State;
         if (spawner != null)
         {
-            member.PlayerName = SafePlayerName(spawner);
+            UpdateMemberName(member, SafePlayerName(spawner));
             member.CurrentFloorId = SafeFloorGuid(spawner);
         }
         member.LastSeenUtc = DateTime.UtcNow;
@@ -3628,6 +3818,40 @@ public sealed class ReconnectController : MonoBehaviour
         }
 
         return member;
+    }
+
+    private static bool UpdateMemberName(ReconnectMemberRecord member, string name)
+    {
+        if (member == null || string.IsNullOrWhiteSpace(name))
+        {
+            return false;
+        }
+
+        string trimmed = name.Trim();
+        if (string.Equals(member.PlayerName, trimmed, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        member.PlayerName = trimmed;
+        return true;
+    }
+
+    private static bool UpdateMemberSteamName(ReconnectMemberRecord member, string name)
+    {
+        if (member == null || string.IsNullOrWhiteSpace(name))
+        {
+            return false;
+        }
+
+        string trimmed = name.Trim();
+        if (string.Equals(member.SteamName, trimmed, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        member.SteamName = trimmed;
+        return true;
     }
 
     public static bool TryGetReservedPlayerSlot(ulong steamId, out int slot)
@@ -3726,6 +3950,7 @@ public sealed class ReconnectController : MonoBehaviour
             builder.Append('\n')
                 .Append(member.SteamId).Append('|')
                 .Append(member.PlayerName).Append('|')
+                .Append(member.SteamName).Append('|')
                 .Append(member.PlayerSlot).Append('|')
                 .Append(member.ReconnectToken).Append('|')
                 .Append(member.SessionId).Append('|')
@@ -4021,6 +4246,7 @@ public sealed class ReconnectController : MonoBehaviour
 
         return "steam=" + member.SteamId +
             " name=" + NullToDash(member.PlayerName) +
+            " steamName=" + NullToDash(member.SteamName) +
             " slot=" + member.PlayerSlot +
             " state=" + member.State +
             " mod=" + member.ModInstalled +

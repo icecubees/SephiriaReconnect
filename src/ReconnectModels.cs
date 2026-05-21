@@ -47,6 +47,7 @@ public sealed class ReconnectMemberRecord
 {
     public ulong SteamId;
     public string PlayerName;
+    public string SteamName;
     public int PlayerSlot = -1;
     public string ReconnectToken;
     public string SessionId;
