@@ -1017,7 +1017,6 @@ public sealed class ReconnectController : MonoBehaviour
         builder.AppendLine("局内标识：" + GetRunId());
         builder.AppendLine("网络：服务端=" + NetworkServer.active + "，客户端=" + NetworkClient.active);
         builder.AppendLine("房间：" + (lobby.HasLobby ? lobby.LobbyId.ToString() : "无"));
-        builder.AppendLine("房主 SteamID：" + (lobby.HostSteamId == 0 ? "未知" : lobby.HostSteamId.ToString()));
         builder.AppendLine("日志：" + ShortPath(ReconnectLogger.CurrentLogPath));
         if (hostSession != null)
         {
@@ -1093,8 +1092,7 @@ public sealed class ReconnectController : MonoBehaviour
         string slot = member.PlayerSlot >= 0 ? member.PlayerSlot.ToString() : "?";
         string playerName = !string.IsNullOrWhiteSpace(member?.PlayerName) ? member.PlayerName.Trim() : "未知";
         string steamName = !string.IsNullOrWhiteSpace(member?.SteamName) ? member.SteamName.Trim() : "未知";
-        string steamId = member != null && member.SteamId != 0 ? member.SteamId.ToString() : "未知";
-        return "槽位 " + slot + "  游戏名 " + playerName + "  Steam昵称 " + steamName + "  SteamID " + steamId + "  " + DescribeMemberState(member.State) + "  " + DescribeMemberMod(member);
+        return "槽位 " + slot + "  游戏名 " + playerName + "  Steam昵称 " + steamName + "  " + DescribeMemberState(member.State) + "  " + DescribeMemberMod(member);
     }
 
     private static string GetMemberDisplayName(ReconnectMemberRecord member)
@@ -1114,7 +1112,7 @@ public sealed class ReconnectController : MonoBehaviour
             return member.SteamName.Trim();
         }
 
-        return "Steam " + member.SteamId;
+        return "未知成员";
     }
 
     private void AddPanelButton(string text, Vector2 anchoredPosition, Vector2 size, UnityEngine.Events.UnityAction action)

@@ -14,7 +14,8 @@
 - 恢复后继续刷新 Steam lobby 重连数据，方便成员稍后再回房。
 - 支持 Steam 邀请重连和客户端“加入上次房间”。
 - 使用 Unity UI 面板，不使用 IMGUI。
-- 左下角兔头图标自动跟随原生 HUD 图标组，并在过场或其他界面打开时隐藏。
+- 左下角重连图标自动跟随原生 HUD 图标组，并在过场或其他界面打开时隐藏。
+- 中文重连面板会显示联机成员的槽位、游戏内名字、Steam 昵称、在线状态和 Mod 握手状态。
 - 提供文件日志，并按数量、大小和保留天数自动清理旧日志。
 
 ## 安装
@@ -35,10 +36,11 @@ Sephiria\AddOns\SephiriaReconnect
 ├─ config.json
 ├─ README.md
 └─ assets
-   ├─ reconnect-rabbit-green.png
-   ├─ reconnect-rabbit-green-hover.png
-   ├─ reconnect-rabbit-amber.png
-   └─ reconnect-rabbit-gray.png
+   ├─ reconnect-rabbit-framed-green.png
+   ├─ reconnect-rabbit-framed-green-selected.png
+   ├─ reconnect-rabbit-framed-amber.png
+   ├─ reconnect-rabbit-framed-amber-selected.png
+   └─ reconnect-rabbit-framed-gray.png
 ```
 
 建议所有参与联机的玩家安装同一版本 Mod。房主安装 Mod 是断线恢复链路的核心；客户端安装同版本 Mod 后可以发送重连握手，让房主更准确地按 SteamID 恢复槽位。
@@ -47,7 +49,17 @@ Sephiria\AddOns\SephiriaReconnect
 
 ## 使用
 
-进入游戏后，左下角原生图标右侧会出现一个兔头图标。点击图标打开中文重连面板。
+进入游戏后，左下角原生图标右侧会出现一个重连图标。点击图标打开中文重连面板。
+
+面板中的 `联机成员` 会显示：
+
+- 槽位
+- 游戏内名字
+- Steam 昵称
+- 在线/掉线/待重连状态
+- 是否完成 Mod 握手
+
+面板不显示完整 SteamID；SteamID 只用于内部槽位绑定、邀请和日志排查。
 
 ### 房主
 
@@ -63,7 +75,7 @@ Sephiria\AddOns\SephiriaReconnect
 
 1. 房主和成员正常联机进入关卡。
 2. 房主进入每层时，Mod 自动保存本层入口检查点。
-3. 成员掉线后，房主面板中会显示该成员为离线或待重连。
+3. 成员掉线后，房主面板中会显示该成员的游戏内名字、Steam 昵称和离线/待重连状态。
 4. 房主可先执行 `本层恢复`，也可以先 `邀请重连`。
 5. 成员通过 Steam 邀请或 `加入上次房间` 回到房主会话。
 6. 成员回房后发送握手，房主按 SteamID 尝试绑定回原槽位。
