@@ -72,6 +72,8 @@ public sealed class ReconnectCheckpointRecord
     public string StageName;
     public string RunId;
     public string SaveSlotId;
+    public string LobbyChapter;
+    public string LobbyChapterRunIdentity;
     public string SnapshotPath;
     public DateTime CreatedUtc;
 }
@@ -85,6 +87,8 @@ public sealed class ReconnectSessionRecord
     public string SessionId;
     public string SaveSlotId;
     public string RunId;
+    public string LastKnownLobbyChapter;
+    public string LastKnownLobbyChapterRunIdentity;
     public string CurrentFloorId;
     public string CurrentCheckpointId;
     public string CurrentCheckpointHash;

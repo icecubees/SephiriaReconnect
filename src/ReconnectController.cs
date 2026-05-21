@@ -58,6 +58,9 @@ public sealed class ReconnectController : MonoBehaviour
     private float nextHostLobbyRefreshAt;
     private float nextHostLobbyPublishAt;
     private float nextPanelMemberRefreshAt;
+    private float nextPanelLobbyMemberRefreshAt;
+    private float nextPanelTextRefreshAt;
+    private float nextGameStyleProbeAt;
     private bool lastHudVisible;
     private string lastPublishedLobbyState = "";
     private string lastSavedHostSessionState = "";
@@ -132,6 +135,7 @@ public sealed class ReconnectController : MonoBehaviour
 
     private void Update()
     {
+        ReconnectLogger.Tick();
         bool shouldShowUi = ShouldShowReconnectUi();
         if (shouldShowUi)
         {
@@ -500,6 +504,7 @@ public sealed class ReconnectController : MonoBehaviour
 
         if (panelOpen)
         {
+            nextPanelTextRefreshAt = 0f;
             RefreshPanelMemberData(force: true);
         }
 
@@ -1008,6 +1013,12 @@ public sealed class ReconnectController : MonoBehaviour
             return;
         }
 
+        if (Time.unscaledTime < nextPanelTextRefreshAt)
+        {
+            return;
+        }
+
+        nextPanelTextRefreshAt = Time.unscaledTime + 2f;
         RefreshPanelMemberData(force: false);
         LobbyInfo lobby = GetLobbyInfo();
         StringBuilder builder = new StringBuilder();
@@ -1069,7 +1080,12 @@ public sealed class ReconnectController : MonoBehaviour
 
         nextPanelMemberRefreshAt = Time.unscaledTime + 3f;
         RefreshHostMembersFromPlayerSpawners();
-        RefreshHostMembersFromLobby();
+        if (force || Time.unscaledTime >= nextPanelLobbyMemberRefreshAt)
+        {
+            nextPanelLobbyMemberRefreshAt = Time.unscaledTime + Mathf.Max(10f, config.HostLobbyRefreshSeconds);
+            RefreshHostMembersFromLobby();
+        }
+
         SaveHostSession();
     }
 
@@ -1237,6 +1253,12 @@ public sealed class ReconnectController : MonoBehaviour
             return;
         }
 
+        if (Time.unscaledTime < nextGameStyleProbeAt)
+        {
+            return;
+        }
+
+        nextGameStyleProbeAt = Time.unscaledTime + 5f;
         bool appliedAny = false;
         UI_HUDMenu hudMenu = GetCachedHudMenu();
         UI_HorayButton styleButton = GetStyleButton(hudMenu);
@@ -2221,9 +2243,11 @@ public sealed class ReconnectController : MonoBehaviour
         LobbyInfo lobby = GetLobbyInfo();
         string saveSlot = GetSelectedSaveSlot();
         string runId = GetRunId();
+        string runIdentity = GetRunIdentity();
 
-        bool changedSaveOrRun = hostSession != null
-            && (hostSession.SaveSlotId != saveSlot || hostSession.RunId != runId);
+        bool changedSave = hostSession != null && hostSession.SaveSlotId != saveSlot;
+        bool changedRunIdentity = hostSession != null && ExtractRunIdentity(hostSession.RunId) != runIdentity;
+        bool changedSaveOrRun = changedSave || changedRunIdentity;
         bool changedHost = hostSession != null
             && hostSession.HostSteamId != 0
             && lobby.LocalSteamId != 0
@@ -2259,6 +2283,12 @@ public sealed class ReconnectController : MonoBehaviour
             if (hostSession.HostSteamId == 0 && lobby.LocalSteamId != 0)
             {
                 hostSession.HostSteamId = lobby.LocalSteamId;
+            }
+
+            if (hostSession.RunId != runId)
+            {
+                ReconnectLogger.Info("Run progress changed; preserving reconnect session. oldRun=" + NullToDash(hostSession.RunId) + " newRun=" + runId + " session=" + Short(hostSession.SessionId));
+                hostSession.RunId = runId;
             }
 
             hostSession.LobbyId = lobby.LobbyId;
@@ -2658,6 +2688,7 @@ public sealed class ReconnectController : MonoBehaviour
         }
 
         lastObservedFloorGuid = floorGuid;
+        EnsureLobbyChapterCachedForRun("first-floor-entry");
         ReconnectLogger.Info("Floor checkpoint candidate accepted. floor=" + Short(floorGuid));
         CaptureCheckpoint("floor-entry", activateForRestore: true, floorGuid);
     }
@@ -2724,6 +2755,7 @@ public sealed class ReconnectController : MonoBehaviour
             string floorGuid = string.IsNullOrEmpty(floorGuidOverride) ? GetLocalFloorGuid() : floorGuidOverride;
             ReconnectLogger.Info("Capturing checkpoint. reason=" + reason + " activate=" + activateForRestore + " floor=" + Short(floorGuid) + " session=" + Short(hostSession.SessionId));
             FlushCurrentRunForCheckpoint(floorGuid);
+            string lobbyChapter = ResolveLobbyChapterForCheckpoint();
 
             if (PlayerSpawner.MultiplayerList != null)
             {
@@ -2752,6 +2784,8 @@ public sealed class ReconnectController : MonoBehaviour
                 StageName = floor == null ? "" : floor.stageName,
                 RunId = hostSession.RunId,
                 SaveSlotId = hostSession.SaveSlotId,
+                LobbyChapter = lobbyChapter,
+                LobbyChapterRunIdentity = ExtractRunIdentity(hostSession.RunId),
                 SnapshotPath = snapshotPath,
                 CreatedUtc = DateTime.UtcNow
             };
@@ -3024,6 +3058,8 @@ public sealed class ReconnectController : MonoBehaviour
             snapshot.enableCloudSave = false;
             snapshot.Save(checkpoint.SnapshotPath);
             checkpoint.CheckpointHash = ComputeSaveHash(SaveManager.CurrentRun);
+            checkpoint.LobbyChapter = ResolveLobbyChapterForCheckpoint();
+            checkpoint.LobbyChapterRunIdentity = ExtractRunIdentity(hostSession?.RunId);
             if (hostSession != null && hostSession.CurrentCheckpointId == checkpoint.CheckpointId)
             {
                 hostSession.CurrentCheckpointHash = checkpoint.CheckpointHash;
@@ -3191,13 +3227,15 @@ public sealed class ReconnectController : MonoBehaviour
             }
 
             LobbyData data = lobby.Manager.Lobby;
+            string chapter = data["Chapter"];
+            RememberLobbyChapter(chapter, "capture-lobby-settings");
             LobbySettingsSnapshot snapshot = new LobbySettingsSnapshot
             {
                 Name = data.Name,
                 GameVersion = data.GameVersion,
                 Type = data.Type,
                 MaxMembers = data.MaxMembers,
-                Chapter = data["Chapter"]
+                Chapter = chapter
             };
             ReconnectLogger.Info("Captured Steam lobby settings. " + DescribeLobby(lobby) + " name=" + NullToDash(snapshot.Name) + " version=" + NullToDash(snapshot.GameVersion) + " type=" + snapshot.Type + " max=" + snapshot.MaxMembers + " chapter=" + NullToDash(snapshot.Chapter));
             return snapshot;
@@ -3226,12 +3264,14 @@ public sealed class ReconnectController : MonoBehaviour
 
             if (pendingLobbySettings == null)
             {
+                string chapter = ResolveLobbyChapterForRestore("");
                 data.Type = ELobbyType.k_ELobbyTypePrivate;
                 data.MaxMembers = 4;
                 data.GameVersion = Application.version;
                 data.Name = BuildFallbackLobbyName();
-                data["Chapter"] = BuildLobbyChapterValue();
+                data["Chapter"] = chapter;
                 data.SetGameServer(UserData.Me.id);
+                RememberLobbyChapter(chapter, "apply-fallback-lobby-settings");
                 ReconnectLogger.Info("Applied fallback Steam lobby settings. " + DescribeLobby(lobby) + " name=" + NullToDash(data.Name) + " version=" + NullToDash(data.GameVersion) + " type=" + data.Type + " max=" + data.MaxMembers + " chapter=" + NullToDash(data["Chapter"]));
                 return;
             }
@@ -3251,11 +3291,11 @@ public sealed class ReconnectController : MonoBehaviour
                 data.MaxMembers = pendingLobbySettings.MaxMembers;
             }
 
-            data["Chapter"] = string.IsNullOrEmpty(pendingLobbySettings.Chapter) || !IsValidLobbyChapterValue(pendingLobbySettings.Chapter)
-                ? BuildLobbyChapterValue()
-                : pendingLobbySettings.Chapter;
+            string restoredChapter = ResolveLobbyChapterForRestore(pendingLobbySettings.Chapter);
+            data["Chapter"] = restoredChapter;
 
             data.SetGameServer(UserData.Me.id);
+            RememberLobbyChapter(restoredChapter, "apply-restored-lobby-settings");
             ReconnectLogger.Info("Restored Steam lobby settings. " + DescribeLobby(lobby) + " name=" + NullToDash(data.Name) + " version=" + NullToDash(data.GameVersion) + " type=" + data.Type + " max=" + data.MaxMembers + " chapter=" + NullToDash(data["Chapter"]));
             pendingLobbySettings = null;
         }
@@ -3269,6 +3309,169 @@ public sealed class ReconnectController : MonoBehaviour
     {
         string playerName = SafeLocalPlayerName();
         return string.IsNullOrEmpty(playerName) ? "Sephiria Reconnect" : playerName + "的房间";
+    }
+
+    private string ResolveLobbyChapterForCheckpoint()
+    {
+        string cachedChapter = GetCachedLobbyChapter();
+        if (!string.IsNullOrEmpty(cachedChapter))
+        {
+            return cachedChapter;
+        }
+
+        try
+        {
+            LobbyInfo lobby = GetLobbyInfo();
+            if (TryReadLobbyChapter(lobby, out string lobbyChapter))
+            {
+                RememberLobbyChapter(lobbyChapter, "checkpoint-lobby");
+                return lobbyChapter;
+            }
+        }
+        catch (Exception ex)
+        {
+            ReconnectLogger.Warning("Failed to read Steam lobby chapter for checkpoint: " + ex.Message);
+        }
+
+        string builtChapter = BuildLobbyChapterValue();
+        if (IsUsefulBuiltLobbyChapterValue(builtChapter))
+        {
+            RememberLobbyChapter(builtChapter, "checkpoint-derived");
+            return builtChapter;
+        }
+
+        return string.IsNullOrEmpty(cachedChapter) ? builtChapter : cachedChapter;
+    }
+
+    private string ResolveLobbyChapterForRestore(string preferredChapter)
+    {
+        string cachedChapter = GetCachedLobbyChapter();
+        if (!string.IsNullOrEmpty(cachedChapter))
+        {
+            return cachedChapter;
+        }
+
+        preferredChapter = NormalizeLobbyChapterValue(preferredChapter);
+        ReconnectCheckpointRecord checkpoint = GetCurrentRestoreCheckpoint();
+        string expectedRunIdentity = ExtractRunIdentity(hostSession?.RunId);
+        string checkpointChapter = NormalizeLobbyChapterValue(checkpoint == null ? "" : checkpoint.LobbyChapter);
+        if (IsValidLobbyChapterValue(checkpointChapter) && IsLobbyChapterCacheForCurrentRun(checkpoint.LobbyChapterRunIdentity, expectedRunIdentity))
+        {
+            return checkpointChapter;
+        }
+
+        if (IsValidLobbyChapterValue(preferredChapter))
+        {
+            return preferredChapter;
+        }
+
+        return BuildLobbyChapterValue();
+    }
+
+    private ReconnectCheckpointRecord GetCurrentRestoreCheckpoint()
+    {
+        if (hostSession == null || hostSession.Checkpoints == null || string.IsNullOrEmpty(hostSession.CurrentCheckpointId))
+        {
+            return null;
+        }
+
+        return hostSession.Checkpoints.LastOrDefault(c => c != null && c.CheckpointId == hostSession.CurrentCheckpointId);
+    }
+
+    private string GetCachedLobbyChapter()
+    {
+        string expectedRunIdentity = ExtractRunIdentity(hostSession?.RunId);
+        string sessionChapter = NormalizeLobbyChapterValue(hostSession == null ? "" : hostSession.LastKnownLobbyChapter);
+        if (IsValidLobbyChapterValue(sessionChapter) && IsLobbyChapterCacheForCurrentRun(hostSession.LastKnownLobbyChapterRunIdentity, expectedRunIdentity))
+        {
+            return sessionChapter;
+        }
+
+        ReconnectCheckpointRecord checkpoint = GetCurrentRestoreCheckpoint();
+        string checkpointChapter = NormalizeLobbyChapterValue(checkpoint == null ? "" : checkpoint.LobbyChapter);
+        return IsValidLobbyChapterValue(checkpointChapter) && IsLobbyChapterCacheForCurrentRun(checkpoint.LobbyChapterRunIdentity, expectedRunIdentity) ? checkpointChapter : "";
+    }
+
+    private bool RememberLobbyChapter(string chapter, string source)
+    {
+        if (hostSession == null)
+        {
+            return false;
+        }
+
+        chapter = NormalizeLobbyChapterValue(chapter);
+        if (!IsValidLobbyChapterValue(chapter))
+        {
+            return false;
+        }
+
+        string runIdentity = ExtractRunIdentity(hostSession.RunId);
+        if (hostSession.LastKnownLobbyChapter == chapter && IsLobbyChapterCacheForCurrentRun(hostSession.LastKnownLobbyChapterRunIdentity, runIdentity))
+        {
+            return false;
+        }
+
+        string cachedChapter = GetCachedLobbyChapter();
+        if (!string.IsNullOrEmpty(cachedChapter) && cachedChapter != chapter)
+        {
+            ReconnectLogger.Info("Keeping cached Steam lobby chapter. source=" + source + " cached=" + cachedChapter + " ignored=" + chapter + " session=" + Short(hostSession.SessionId));
+            return false;
+        }
+
+        hostSession.LastKnownLobbyChapter = chapter;
+        hostSession.LastKnownLobbyChapterRunIdentity = runIdentity;
+        ReconnectLogger.Info("Cached Steam lobby chapter. source=" + source + " chapter=" + chapter + " session=" + Short(hostSession.SessionId));
+        return true;
+    }
+
+    private bool EnsureLobbyChapterCachedForRun(string source)
+    {
+        if (!string.IsNullOrEmpty(GetCachedLobbyChapter()))
+        {
+            return false;
+        }
+
+        string chapter = ResolveLobbyChapterForCheckpoint();
+        return RememberLobbyChapter(chapter, source);
+    }
+
+    private static bool TryReadLobbyChapter(LobbyInfo lobby, out string chapter)
+    {
+        chapter = "";
+        try
+        {
+            if (!lobby.HasLobby || lobby.Manager == null)
+            {
+                return false;
+            }
+
+            chapter = NormalizeLobbyChapterValue(lobby.Manager.Lobby["Chapter"]);
+            return IsValidLobbyChapterValue(chapter);
+        }
+        catch (Exception ex)
+        {
+            ReconnectLogger.Warning("Failed to read Steam lobby chapter: " + ex.Message);
+            chapter = "";
+            return false;
+        }
+    }
+
+    private static bool IsUsefulBuiltLobbyChapterValue(string value)
+    {
+        value = NormalizeLobbyChapterValue(value);
+        return IsValidLobbyChapterValue(value) && value != "0";
+    }
+
+    private static bool IsLobbyChapterCacheForCurrentRun(string cachedRunIdentity, string expectedRunIdentity)
+    {
+        cachedRunIdentity = NormalizeLobbyChapterValue(cachedRunIdentity);
+        expectedRunIdentity = NormalizeLobbyChapterValue(expectedRunIdentity);
+        return !string.IsNullOrEmpty(cachedRunIdentity) && cachedRunIdentity == expectedRunIdentity;
+    }
+
+    private static string NormalizeLobbyChapterValue(string value)
+    {
+        return string.IsNullOrEmpty(value) ? "" : value.Trim();
     }
 
     private static string BuildLobbyChapterValue()
@@ -3327,6 +3530,7 @@ public sealed class ReconnectController : MonoBehaviour
 
     private static bool IsValidLobbyChapterValue(string value)
     {
+        value = NormalizeLobbyChapterValue(value);
         if (string.IsNullOrEmpty(value))
         {
             return false;
@@ -3652,8 +3856,8 @@ public sealed class ReconnectController : MonoBehaviour
             {
                 member.PlayerSlot = helloSpawner.currentPlayerIdxForSave >= 0 ? helloSpawner.currentPlayerIdxForSave : helloSpawner.currentPlayerIdx;
             }
-            member.SaveSlotId = msg.saveSlotId;
-            member.RunId = msg.runId;
+            member.SaveSlotId = hostSession.SaveSlotId;
+            member.RunId = hostSession.RunId;
             member.SessionId = hostSession.SessionId;
             member.LastSeenUtc = DateTime.UtcNow;
             member.CheckpointId = hostSession.CurrentCheckpointId;
@@ -3685,7 +3889,7 @@ public sealed class ReconnectController : MonoBehaviour
             reason = "",
             hostSteamId = hostSession.HostSteamId,
             lobbyId = hostSession.LobbyId,
-            saveSlotId = hostSession.SaveSlotId,
+            saveSlotId = string.IsNullOrEmpty(msg.saveSlotId) ? hostSession.SaveSlotId : msg.saveSlotId,
             runId = hostSession.RunId,
             sessionId = hostSession.SessionId,
             checkpointId = hostSession.CurrentCheckpointId ?? "",
@@ -3706,14 +3910,12 @@ public sealed class ReconnectController : MonoBehaviour
 
         if (!string.IsNullOrEmpty(msg.saveSlotId) && msg.saveSlotId != hostSession.SaveSlotId)
         {
-            reply.reason = "存档槽不匹配。";
-            return reply;
+            ReconnectLogger.Info("Hello save slot differs; treating save slot as local metadata. clientSlot=" + msg.saveSlotId + " hostSlot=" + hostSession.SaveSlotId);
         }
 
-        if (!string.IsNullOrEmpty(msg.runId) && msg.runId != hostSession.RunId)
+        if (!string.IsNullOrEmpty(msg.runId) && ExtractRunIdentity(msg.runId) != ExtractRunIdentity(hostSession.RunId))
         {
-            reply.reason = "局内进度不匹配。";
-            return reply;
+            ReconnectLogger.Info("Hello run identity differs; accepting if session/token checks pass. clientRun=" + msg.runId + " hostRun=" + hostSession.RunId + " reconnect=" + msg.reconnectAttempt);
         }
 
         if (!string.IsNullOrEmpty(msg.sessionId) && msg.sessionId != hostSession.SessionId)
@@ -3945,7 +4147,7 @@ public sealed class ReconnectController : MonoBehaviour
 
         hostSession.UpdatedUtc = DateTime.UtcNow;
         store.SaveHostSession(hostSession);
-        lastSavedHostSessionState = BuildHostSessionStateSignature();
+        lastSavedHostSessionState = signature;
     }
 
     private string BuildHostSessionStateSignature()
@@ -3964,6 +4166,8 @@ public sealed class ReconnectController : MonoBehaviour
             .Append(hostSession.SessionId).Append('|')
             .Append(hostSession.SaveSlotId).Append('|')
             .Append(hostSession.RunId).Append('|')
+            .Append(hostSession.LastKnownLobbyChapter).Append('|')
+            .Append(hostSession.LastKnownLobbyChapterRunIdentity).Append('|')
             .Append(hostSession.CurrentFloorId).Append('|')
             .Append(hostSession.CurrentCheckpointId).Append('|')
             .Append(hostSession.CurrentCheckpointHash).Append('|')
@@ -3978,6 +4182,8 @@ public sealed class ReconnectController : MonoBehaviour
                 .Append(checkpoint.FloorGuid).Append('|')
                 .Append(checkpoint.RunId).Append('|')
                 .Append(checkpoint.SaveSlotId).Append('|')
+                .Append(checkpoint.LobbyChapter).Append('|')
+                .Append(checkpoint.LobbyChapterRunIdentity).Append('|')
                 .Append(checkpoint.CreatedUtc.Ticks);
         }
 
@@ -4115,6 +4321,36 @@ public sealed class ReconnectController : MonoBehaviour
         {
             return "未知";
         }
+    }
+
+    private string GetRunIdentity()
+    {
+        try
+        {
+            if (SaveManager.CurrentRun == null)
+            {
+                return "未开始";
+            }
+
+            int seed = SaveManager.CurrentRun.GetInt("Seed", 0);
+            int game = SaveManager.CurrentRun.GetInt("CurrentGame", -1);
+            return seed + ":" + game;
+        }
+        catch
+        {
+            return "未知";
+        }
+    }
+
+    private static string ExtractRunIdentity(string runId)
+    {
+        if (string.IsNullOrEmpty(runId))
+        {
+            return "";
+        }
+
+        string[] parts = runId.Split(':');
+        return parts.Length >= 2 ? parts[0] + ":" + parts[1] : runId;
     }
 
     private string GetLocalFloorGuid()
@@ -4302,6 +4538,7 @@ public sealed class ReconnectController : MonoBehaviour
             " guid=" + Short(checkpoint.FloorGuid) +
             " run=" + NullToDash(checkpoint.RunId) +
             " slot=" + NullToDash(checkpoint.SaveSlotId) +
+            " chapter=" + NullToDash(checkpoint.LobbyChapter) +
             " hash=" + Short(checkpoint.CheckpointHash);
     }
 

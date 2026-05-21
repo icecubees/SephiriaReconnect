@@ -16,12 +16,14 @@ public static class ReconnectLogger
     private static int currentLogIndex;
     private static bool initialized;
     private static bool subscribed;
+    private static readonly StringBuilder PendingLog = new StringBuilder(8192);
     private static bool fileLoggingEnabled = true;
     private static int maxLogFiles = 8;
     private static long maxLogFileBytes = 1048576;
     private static int logRetentionDays = 7;
     private static float pruneIntervalSeconds = 600f;
     private static float nextPruneAt;
+    private static float nextFlushAt;
 
     public static string CurrentLogPath => currentLogPath;
 
@@ -62,6 +64,7 @@ public static class ReconnectLogger
 
     public static void Shutdown()
     {
+        FlushPending(force: true);
         lock (Sync)
         {
             if (subscribed)
@@ -73,7 +76,13 @@ public static class ReconnectLogger
             initialized = false;
             currentLogPath = null;
             logDirectory = null;
+            PendingLog.Clear();
         }
+    }
+
+    public static void Tick()
+    {
+        FlushPending(force: false);
     }
 
     public static void Info(string message)
@@ -112,25 +121,61 @@ public static class ReconnectLogger
         {
             try
             {
-                RotateIfNeeded();
-                PruneLogs(force: false);
-
-                StringBuilder builder = new StringBuilder(256);
-                builder.Append(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff"));
-                builder.Append(" [").Append(type).Append("] ");
-                builder.AppendLine(condition);
+                PendingLog.Append(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff"));
+                PendingLog.Append(" [").Append(type).Append("] ");
+                PendingLog.AppendLine(condition);
 
                 if ((type == LogType.Error || type == LogType.Exception || type == LogType.Assert) && !string.IsNullOrEmpty(stackTrace))
                 {
-                    builder.AppendLine(stackTrace);
+                    PendingLog.AppendLine(stackTrace);
                 }
-
-                File.AppendAllText(currentLogPath, builder.ToString(), Encoding.UTF8);
             }
             catch
             {
                 // Logging must never interfere with gameplay or reconnect handling.
             }
+        }
+    }
+
+    private static void FlushPending(bool force)
+    {
+        string text;
+        string path;
+        lock (Sync)
+        {
+            if (!initialized || !fileLoggingEnabled || PendingLog.Length == 0)
+            {
+                return;
+            }
+
+            bool due = force || Time.unscaledTime >= nextFlushAt || PendingLog.Length >= 32 * 1024;
+            if (!due)
+            {
+                return;
+            }
+
+            nextFlushAt = Time.unscaledTime + 2f;
+            try
+            {
+                RotateIfNeeded();
+                PruneLogs(force: false);
+                path = currentLogPath;
+                text = PendingLog.ToString();
+                PendingLog.Clear();
+            }
+            catch
+            {
+                return;
+            }
+        }
+
+        try
+        {
+            File.AppendAllText(path, text, Encoding.UTF8);
+        }
+        catch
+        {
+            // File logging is diagnostic only; gameplay should never wait on it.
         }
     }
 
