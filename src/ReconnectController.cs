@@ -1030,7 +1030,7 @@ public sealed class ReconnectController : MonoBehaviour
         builder.AppendLine("网络：服务端=" + NetworkServer.active + "，客户端=" + NetworkClient.active);
         builder.AppendLine("房间：" + (lobby.HasLobby ? lobby.LobbyId.ToString() : "无"));
         builder.AppendLine("日志：" + ShortPath(ReconnectLogger.CurrentLogPath));
-        if (hostSession != null)
+        if (NetworkServer.active && hostSession != null)
         {
             builder.AppendLine();
             builder.AppendLine("会话：" + hostSession.SessionId);
@@ -1048,6 +1048,14 @@ public sealed class ReconnectController : MonoBehaviour
                 builder.AppendLine("  " + FormatPanelMember(member));
             }
         }
+        else if (NetworkClient.active && !NetworkServer.active)
+        {
+            builder.AppendLine();
+            string lobbySessionId = ReadLobbySessionId(lobby);
+            builder.AppendLine("房主会话：" + Short(!string.IsNullOrEmpty(lobbySessionId) ? lobbySessionId : lastSession?.SessionId));
+            builder.AppendLine("联机成员：由房主面板显示完整列表");
+            builder.AppendLine("本机握手：" + (clientHelloAccepted ? "已确认" : "未确认"));
+        }
 
         if (lastSession != null)
         {
@@ -1062,7 +1070,52 @@ public sealed class ReconnectController : MonoBehaviour
         builder.AppendLine("流程：保存楼层入口点 -> 房主先本层恢复 -> 邀请成员回房 -> 成员握手。");
         builder.AppendLine("本层恢复点只在当前会话内保留；进入新局会清理旧检查点。");
 
-        panelText.text = builder.ToString();
+        string text = builder.ToString();
+        ApplyPanelSizeForText(text);
+        panelText.text = text;
+    }
+
+    private void ApplyPanelSizeForText(string text)
+    {
+        if (panelRectTransform == null || string.IsNullOrEmpty(text))
+        {
+            return;
+        }
+
+        string[] lines = text.Replace("\r\n", "\n").Split('\n');
+        int lineCount = Mathf.Max(1, lines.Length);
+        int maxUnits = 0;
+        foreach (string line in lines)
+        {
+            maxUnits = Mathf.Max(maxUnits, EstimatePanelTextUnits(line));
+        }
+
+        float maxWidth = Mathf.Max(460f, Screen.width - 24f);
+        float maxHeight = Mathf.Max(360f, Screen.height - 24f);
+        float desiredWidth = Mathf.Clamp(460f + Mathf.Max(0, maxUnits - 42) * 6.5f, 460f, maxWidth);
+        float desiredHeight = Mathf.Clamp(120f + lineCount * 17f, 360f, maxHeight);
+        Vector2 desired = new Vector2(desiredWidth, desiredHeight);
+        if (Vector2.Distance(panelRectTransform.sizeDelta, desired) > 0.5f)
+        {
+            panelRectTransform.sizeDelta = desired;
+            UpdatePanelPositionNearIcon();
+        }
+    }
+
+    private static int EstimatePanelTextUnits(string line)
+    {
+        if (string.IsNullOrEmpty(line))
+        {
+            return 0;
+        }
+
+        int units = 0;
+        foreach (char ch in line)
+        {
+            units += ch > 127 ? 2 : 1;
+        }
+
+        return units;
     }
 
     private void RefreshPanelMemberData(bool force)
