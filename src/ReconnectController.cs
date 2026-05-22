@@ -1517,11 +1517,11 @@ public sealed class ReconnectController : MonoBehaviour
 
     private void LoadReconnectIconSprites()
     {
-        iconSprite = LoadReconnectIconSprite("reconnect-rabbit-framed-green.png") ?? LoadReconnectIconSprite("reconnect-rabbit-green.png") ?? CreateReconnectIconSprite(hover: false);
-        iconHoverSprite = LoadReconnectIconSprite("reconnect-rabbit-framed-green-selected.png") ?? LoadReconnectIconSprite("reconnect-rabbit-green-hover.png") ?? CreateReconnectIconSprite(hover: true);
-        iconOfflineSprite = LoadReconnectIconSprite("reconnect-rabbit-framed-amber.png") ?? LoadReconnectIconSprite("reconnect-rabbit-amber.png") ?? iconSprite;
-        iconOfflineHoverSprite = LoadReconnectIconSprite("reconnect-rabbit-framed-amber-selected.png") ?? iconHoverSprite;
-        iconDisabledSprite = LoadReconnectIconSprite("reconnect-rabbit-framed-gray.png") ?? LoadReconnectIconSprite("reconnect-rabbit-gray.png") ?? iconSprite;
+        iconSprite = LoadReconnectIconSprite("reconnect-icon-normal.png") ?? CreateReconnectIconSprite(hover: false);
+        iconHoverSprite = LoadReconnectIconSprite("reconnect-icon-selected.png") ?? CreateReconnectIconSprite(hover: true);
+        iconOfflineSprite = LoadReconnectIconSprite("reconnect-icon-offline.png") ?? iconSprite;
+        iconOfflineHoverSprite = LoadReconnectIconSprite("reconnect-icon-offline-selected.png") ?? iconHoverSprite;
+        iconDisabledSprite = LoadReconnectIconSprite("reconnect-icon-disabled.png") ?? iconSprite;
     }
 
     private Sprite LoadReconnectIconSprite(string fileName)
