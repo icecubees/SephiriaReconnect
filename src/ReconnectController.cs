@@ -1036,8 +1036,8 @@ public sealed class ReconnectController : MonoBehaviour
             builder.AppendLine("会话：" + hostSession.SessionId);
             builder.AppendLine("检查点：" + NullToDash(hostSession.CurrentCheckpointId));
             builder.AppendLine("检查点哈希：" + Short(hostSession.CurrentCheckpointHash));
-            builder.AppendLine("联机成员：");
             List<ReconnectMemberRecord> members = GetPanelMembers();
+            builder.AppendLine("联机成员：" + members.Count);
             if (members.Count == 0)
             {
                 builder.AppendLine("  暂无已记录成员");
@@ -1059,7 +1059,7 @@ public sealed class ReconnectController : MonoBehaviour
 
         builder.AppendLine();
         builder.AppendLine("说明：当前版本执行“本楼层入口回滚”。");
-        builder.AppendLine("流程：自动保存楼层入口点 -> 房主按历史 SteamID 发邀请 -> 掉线玩家回房 -> 房主执行本层恢复。");
+        builder.AppendLine("流程：保存楼层入口点 -> 房主先本层恢复 -> 邀请成员回房 -> 成员握手。");
         builder.AppendLine("本层恢复点只在当前会话内保留；进入新局会清理旧检查点。");
 
         panelText.text = builder.ToString();
@@ -2228,6 +2228,11 @@ public sealed class ReconnectController : MonoBehaviour
 
     private bool ShouldAttemptReconnectHello()
     {
+        if (clientHelloAccepted)
+        {
+            return false;
+        }
+
         if (lastSession == null)
         {
             return false;
@@ -2258,6 +2263,12 @@ public sealed class ReconnectController : MonoBehaviour
 
         if (needsNewSession)
         {
+            Dictionary<ulong, ReconnectMemberRecord> carriedMembers = null;
+            if (changedRunIdentity && !changedSave && !changedHost)
+            {
+                carriedMembers = CaptureMembersForSessionCarryover();
+            }
+
             if (changedSaveOrRun)
             {
                 ReconnectLogger.Info("Save slot or run changed; deleting ended session checkpoints. oldSave=" + NullToDash(hostSession?.SaveSlotId) + " oldRun=" + NullToDash(hostSession?.RunId) + " newSave=" + saveSlot + " newRun=" + runId);
@@ -2274,6 +2285,7 @@ public sealed class ReconnectController : MonoBehaviour
                 CreatedUtc = DateTime.UtcNow,
                 UpdatedUtc = DateTime.UtcNow
             };
+            ApplyCarriedMembersToNewSession(carriedMembers);
             statusLine = "已创建房主重连会话。";
             ReconnectLogger.Info("Created host reconnect session. host=" + hostSession.HostSteamId + " lobby=" + hostSession.LobbyId + " session=" + Short(hostSession.SessionId) + " save=" + hostSession.SaveSlotId + " run=" + hostSession.RunId + " changedHost=" + changedHost);
             SaveHostSession();
@@ -2321,6 +2333,79 @@ public sealed class ReconnectController : MonoBehaviour
         }
     }
 
+    private Dictionary<ulong, ReconnectMemberRecord> CaptureMembersForSessionCarryover()
+    {
+        if (hostSession?.Members == null || hostSession.Members.Count == 0)
+        {
+            return null;
+        }
+
+        Dictionary<ulong, ReconnectMemberRecord> carried = new Dictionary<ulong, ReconnectMemberRecord>();
+        foreach (KeyValuePair<ulong, ReconnectMemberRecord> pair in hostSession.Members)
+        {
+            ReconnectMemberRecord source = pair.Value;
+            if (source == null || source.SteamId == 0 || source.State == ReconnectMemberState.Removed)
+            {
+                continue;
+            }
+
+            carried[pair.Key] = CloneMemberForSessionCarryover(source);
+        }
+
+        return carried.Count > 0 ? carried : null;
+    }
+
+    private void ApplyCarriedMembersToNewSession(Dictionary<ulong, ReconnectMemberRecord> carriedMembers)
+    {
+        if (hostSession == null || carriedMembers == null || carriedMembers.Count == 0)
+        {
+            return;
+        }
+
+        hostSession.Members ??= new Dictionary<ulong, ReconnectMemberRecord>();
+        foreach (ReconnectMemberRecord member in carriedMembers.Values)
+        {
+            if (member == null || member.SteamId == 0)
+            {
+                continue;
+            }
+
+            member.SessionId = hostSession.SessionId;
+            member.SaveSlotId = hostSession.SaveSlotId;
+            member.RunId = hostSession.RunId;
+            member.CheckpointId = hostSession.CurrentCheckpointId;
+            if (member.State == ReconnectMemberState.ReconnectedWaiting)
+            {
+                member.State = ReconnectMemberState.Online;
+            }
+
+            hostSession.Members[member.SteamId] = member;
+        }
+
+        ReconnectLogger.Info("Carried members into new host session. count=" + hostSession.Members.Count + " session=" + Short(hostSession.SessionId));
+    }
+
+    private static ReconnectMemberRecord CloneMemberForSessionCarryover(ReconnectMemberRecord source)
+    {
+        return new ReconnectMemberRecord
+        {
+            SteamId = source.SteamId,
+            PlayerName = source.PlayerName,
+            SteamName = source.SteamName,
+            PlayerSlot = source.PlayerSlot,
+            ReconnectToken = string.IsNullOrEmpty(source.ReconnectToken) ? Guid.NewGuid().ToString("N") : source.ReconnectToken,
+            SessionId = source.SessionId,
+            SaveSlotId = source.SaveSlotId,
+            RunId = source.RunId,
+            CurrentFloorId = source.CurrentFloorId,
+            CheckpointId = source.CheckpointId,
+            ModInstalled = source.ModInstalled,
+            LastHelloUtc = source.LastHelloUtc,
+            LastSeenUtc = source.LastSeenUtc,
+            State = source.State
+        };
+    }
+
     private void RefreshHostMembersFromPlayerSpawners()
     {
         if (hostSession == null || PlayerSpawner.MultiplayerList == null)
@@ -2328,6 +2413,7 @@ public sealed class ReconnectController : MonoBehaviour
             return;
         }
 
+        LobbyInfo lobby = GetLobbyInfo();
         foreach (PlayerSpawner spawner in PlayerSpawner.MultiplayerList)
         {
             if (spawner == null || spawner.steamID == 0)
@@ -2339,10 +2425,19 @@ public sealed class ReconnectController : MonoBehaviour
             RememberConnectionSteamId(spawner);
             ReconnectMemberState previousState = member.State;
             int previousSlot = member.PlayerSlot;
+            bool previousModInstalled = member.ModInstalled;
             UpdateMemberName(member, SafePlayerName(spawner));
             if (member.PlayerSlot < 0)
             {
                 member.PlayerSlot = spawner.currentPlayerIdxForSave >= 0 ? spawner.currentPlayerIdxForSave : spawner.currentPlayerIdx;
+            }
+            if (lobby.LocalSteamId != 0 && spawner.steamID == lobby.LocalSteamId)
+            {
+                member.ModInstalled = true;
+                if (member.LastHelloUtc == default)
+                {
+                    member.LastHelloUtc = DateTime.UtcNow;
+                }
             }
             member.SaveSlotId = hostSession.SaveSlotId;
             member.RunId = hostSession.RunId;
@@ -2359,7 +2454,7 @@ public sealed class ReconnectController : MonoBehaviour
                 member.State = ReconnectMemberState.Online;
             }
 
-            if (previousState != member.State || previousSlot != member.PlayerSlot)
+            if (previousState != member.State || previousSlot != member.PlayerSlot || previousModInstalled != member.ModInstalled)
             {
                 ReconnectLogger.Info("Player spawner refreshed member. oldState=" + previousState + " oldSlot=" + previousSlot + " " + DescribeMember(member));
             }
@@ -3842,7 +3937,7 @@ public sealed class ReconnectController : MonoBehaviour
     private void HandleServerHello(NetworkConnectionToClient conn, ReconnectHelloMessage msg)
     {
         EnsureHostSession();
-        ReconnectHelloReplyMessage reply = ValidateHello(msg);
+        ReconnectHelloReplyMessage reply = ValidateHello(conn, msg);
         ReconnectLogger.Info("Received hello. accepted=" + reply.accepted + " reason=" + NullToDash(reply.reason) + " " + DescribeHello(msg) + " conn=" + (conn != null ? conn.connectionId.ToString() : "-"));
         if (reply.accepted)
         {
@@ -3861,7 +3956,12 @@ public sealed class ReconnectController : MonoBehaviour
             member.SessionId = hostSession.SessionId;
             member.LastSeenUtc = DateTime.UtcNow;
             member.CheckpointId = hostSession.CurrentCheckpointId;
-            member.State = msg.reconnectAttempt ? ReconnectMemberState.ReconnectedWaiting : ReconnectMemberState.Online;
+            bool currentOnlineRefresh = msg.reconnectAttempt
+                && previousState == ReconnectMemberState.Online
+                && ConnectionMatchesSteamId(conn, msg.playerSteamId);
+            member.State = msg.reconnectAttempt && !currentOnlineRefresh
+                ? ReconnectMemberState.ReconnectedWaiting
+                : ReconnectMemberState.Online;
             if (conn != null && conn.identity != null && conn.identity.TryGetComponent<PlayerSpawner>(out PlayerSpawner reconnectSpawner) && member.PlayerSlot >= 0)
             {
                 reconnectSpawner.currentPlayerIdxForSave = member.PlayerSlot;
@@ -3881,7 +3981,7 @@ public sealed class ReconnectController : MonoBehaviour
         }
     }
 
-    private ReconnectHelloReplyMessage ValidateHello(ReconnectHelloMessage msg)
+    private ReconnectHelloReplyMessage ValidateHello(NetworkConnectionToClient conn, ReconnectHelloMessage msg)
     {
         ReconnectHelloReplyMessage reply = new ReconnectHelloReplyMessage
         {
@@ -3918,13 +4018,22 @@ public sealed class ReconnectController : MonoBehaviour
             ReconnectLogger.Info("Hello run identity differs; accepting if session/token checks pass. clientRun=" + msg.runId + " hostRun=" + hostSession.RunId + " reconnect=" + msg.reconnectAttempt);
         }
 
+        bool knownMember = hostSession.Members.TryGetValue(msg.playerSteamId, out ReconnectMemberRecord member);
         if (!string.IsNullOrEmpty(msg.sessionId) && msg.sessionId != hostSession.SessionId)
         {
-            reply.reason = "会话编号不匹配。";
-            return reply;
+            bool allowCarriedReconnect = msg.reconnectAttempt
+                && knownMember
+                && !string.IsNullOrEmpty(msg.reconnectToken)
+                && msg.reconnectToken == member.ReconnectToken;
+            if (!allowCarriedReconnect)
+            {
+                reply.reason = "会话编号不匹配。";
+                return reply;
+            }
+
+            ReconnectLogger.Info("Hello session differs but token matches carried member; accepting reconnect into current session. clientSession=" + Short(msg.sessionId) + " hostSession=" + Short(hostSession.SessionId) + " steam=" + msg.playerSteamId);
         }
 
-        bool knownMember = hostSession.Members.TryGetValue(msg.playerSteamId, out ReconnectMemberRecord member);
         if (msg.reconnectAttempt)
         {
             if (!knownMember)
@@ -3941,8 +4050,13 @@ public sealed class ReconnectController : MonoBehaviour
 
             if (member.State == ReconnectMemberState.Online)
             {
-                reply.reason = "该玩家仍被记录为在线，拒绝重复重连。";
-                return reply;
+                if (!ConnectionMatchesSteamId(conn, msg.playerSteamId))
+                {
+                    reply.reason = "该玩家仍被记录为在线，拒绝重复重连。";
+                    return reply;
+                }
+
+                ReconnectLogger.Info("Reconnect hello came from the current online player; treating it as a session refresh. steam=" + msg.playerSteamId + " conn=" + (conn != null ? conn.connectionId.ToString() : "-"));
             }
         }
         else
@@ -4035,6 +4149,23 @@ public sealed class ReconnectController : MonoBehaviour
         }
 
         connectionSteamIds[spawner.connectionToClient.connectionId] = spawner.steamID;
+    }
+
+    private bool ConnectionMatchesSteamId(NetworkConnectionToClient conn, ulong steamId)
+    {
+        if (conn == null || steamId == 0)
+        {
+            return false;
+        }
+
+        PlayerSpawner spawner = conn.identity != null ? conn.identity.GetComponent<PlayerSpawner>() : null;
+        if (spawner != null && spawner.steamID == steamId)
+        {
+            return true;
+        }
+
+        return connectionSteamIds.TryGetValue(conn.connectionId, out ulong rememberedSteamId)
+            && rememberedSteamId == steamId;
     }
 
     private ReconnectMemberRecord GetOrCreateMember(ulong steamId)

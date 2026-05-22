@@ -2,7 +2,7 @@
 
 《Sephiria》原生 AddOn 断线重连 Mod。
 
-当前版本：`v0.1.9`
+当前版本：`v0.1.10`
 
 这个项目不是 BepInEx 插件，也不需要额外安装 BepInEx、Belnex 之类的加载器。Mod 使用游戏自带的 AddOn 加载方式；发布包内已经附带 `0Harmony.dll`，玩家不需要额外安装 Harmony。
 
@@ -48,7 +48,7 @@
 下载 GitHub Releases 中的压缩包，例如：
 
 ```text
-SephiriaReconnect-v0.1.9.zip
+SephiriaReconnect-v0.1.10.zip
 ```
 
 游戏目录通常类似：
@@ -69,7 +69,7 @@ Steam\steamapps\common\Sephiria\AddOns
 Steam\steamapps\common\Sephiria\AddOns\SephiriaReconnect
 ```
 
-Release 压缩包里的顶层文件夹通常带版本号，例如 `SephiriaReconnect-v0.1.9`。安装时可以：
+Release 压缩包里的顶层文件夹通常带版本号，例如 `SephiriaReconnect-v0.1.10`。安装时可以：
 
 1. 把这个文件夹解压到 `AddOns` 下后重命名为 `SephiriaReconnect`。
 2. 或者手动创建 `AddOns\SephiriaReconnect`，再把压缩包内的文件复制进去。
