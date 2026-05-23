@@ -31,6 +31,7 @@ public sealed class ReconnectController : MonoBehaviour
     private GameObject iconObject;
     private Image iconImage;
     private UI_HorayButton iconButton;
+    private CanvasGroup iconCanvasGroup;
     private Text iconText;
     private Sprite iconSprite;
     private Sprite iconHoverSprite;
@@ -191,9 +192,18 @@ public sealed class ReconnectController : MonoBehaviour
         }
 
         bool interactive = visible && ShouldAllowReconnectIconInteraction();
+        EnsureIconCanvasGroup();
         if (iconImage != null && iconImage.raycastTarget != interactive)
         {
             iconImage.raycastTarget = interactive;
+        }
+
+        if (iconCanvasGroup != null)
+        {
+            iconCanvasGroup.ignoreParentGroups = true;
+            iconCanvasGroup.alpha = 1f;
+            iconCanvasGroup.blocksRaycasts = interactive;
+            iconCanvasGroup.interactable = interactive;
         }
 
         if (iconButton != null && iconButton.interactable != visible)
@@ -285,6 +295,27 @@ public sealed class ReconnectController : MonoBehaviour
         {
             return false;
         }
+    }
+
+    private void EnsureIconCanvasGroup()
+    {
+        if (iconObject == null)
+        {
+            iconCanvasGroup = null;
+            return;
+        }
+
+        if (iconCanvasGroup == null || iconCanvasGroup.gameObject != iconObject)
+        {
+            iconCanvasGroup = iconObject.GetComponent<CanvasGroup>();
+            if (iconCanvasGroup == null)
+            {
+                iconCanvasGroup = iconObject.AddComponent<CanvasGroup>();
+            }
+        }
+
+        iconCanvasGroup.ignoreParentGroups = true;
+        iconCanvasGroup.alpha = 1f;
     }
 
     private UI_HUDMenu GetCachedHudMenu()
@@ -424,6 +455,7 @@ public sealed class ReconnectController : MonoBehaviour
         iconObject = null;
         iconImage = null;
         iconButton = null;
+        iconCanvasGroup = null;
         iconText = null;
         iconSprite = null;
         iconHoverSprite = null;
@@ -1234,6 +1266,12 @@ public sealed class ReconnectController : MonoBehaviour
         image.raycastTarget = true;
         image.color = Color.white;
         image.preserveAspect = true;
+
+        iconCanvasGroup = buttonObject.AddComponent<CanvasGroup>();
+        iconCanvasGroup.ignoreParentGroups = true;
+        iconCanvasGroup.blocksRaycasts = true;
+        iconCanvasGroup.interactable = true;
+        iconCanvasGroup.alpha = 1f;
 
         RectTransform rect = buttonObject.GetComponent<RectTransform>();
         rect.sizeDelta = size;
