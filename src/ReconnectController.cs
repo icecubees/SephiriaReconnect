@@ -76,6 +76,7 @@ public sealed class ReconnectController : MonoBehaviour
     private string lastObservedFloorGuid = "";
     private string statusLine = "正在初始化。";
     private LobbySettingsSnapshot pendingLobbySettings;
+    private bool restoreHostRestartInProgress;
     private float reconnectConnectionOpenUntil;
     private bool reconnectJoinWindowOpen;
     private bool reconnectPreviousAllowConnection;
@@ -2113,15 +2114,8 @@ public sealed class ReconnectController : MonoBehaviour
         bool serverActive = NetworkServer.active;
         if (wasServerActive && !serverActive)
         {
-            ReconnectLogger.Warning("Server stopped. Clearing host runtime timers. hostSession=" + (hostSession != null) + " lobby=" + (hostSession?.LobbyId ?? 0));
-            lastObservedFloorGuid = "";
-            lastPublishedLobbyState = "";
-            connectionSteamIds.Clear();
-            serverMessageHandlerRegistered = false;
-            nextHostSessionRefreshAt = 0f;
-            nextHostPlayerRefreshAt = 0f;
-            nextHostLobbyRefreshAt = 0f;
-            nextHostLobbyPublishAt = 0f;
+            ReconnectLogger.Warning("Server stopped. restoreRestart=" + restoreHostRestartInProgress + " hostSession=" + (hostSession != null) + " lobby=" + (hostSession?.LobbyId ?? 0));
+            ResetHostRuntimeState("server-stopped", clearSession: !restoreHostRestartInProgress);
         }
 
         wasServerActive = serverActive;
@@ -2549,6 +2543,48 @@ public sealed class ReconnectController : MonoBehaviour
             {
                 ReconnectLogger.Info("Player spawner refreshed member. oldState=" + previousState + " oldSlot=" + previousSlot + " " + DescribeMember(member));
             }
+        }
+    }
+
+    private void ResetHostRuntimeState(string reason, bool clearSession)
+    {
+        lastObservedFloorGuid = "";
+        lastPublishedLobbyState = "";
+        lastSavedHostSessionState = "";
+        connectionSteamIds.Clear();
+        serverMessageHandlerRegistered = false;
+        nextHostSessionRefreshAt = 0f;
+        nextHostPlayerRefreshAt = 0f;
+        nextHostLobbyRefreshAt = 0f;
+        nextHostLobbyPublishAt = 0f;
+        nextSaveHostSessionAt = 0f;
+        nextPanelMemberRefreshAt = 0f;
+        nextPanelLobbyMemberRefreshAt = 0f;
+        nextPanelTextRefreshAt = 0f;
+
+        if (!clearSession)
+        {
+            ReconnectLogger.Info("Preserved host reconnect session during runtime reset. reason=" + reason + " session=" + Short(hostSession?.SessionId));
+            return;
+        }
+
+        if (hostSession != null)
+        {
+            ReconnectLogger.Info("Clearing ended host reconnect session. reason=" + reason + " session=" + Short(hostSession.SessionId) + " checkpoints=" + (hostSession.Checkpoints?.Count ?? 0) + " members=" + (hostSession.Members?.Count ?? 0));
+            DeleteEndedSessionCheckpoints();
+        }
+
+        hostSession = null;
+        pendingLobbySettings = null;
+        statusLine = "已离开上一局，等待新会话。";
+
+        try
+        {
+            store?.DeleteHostSession();
+        }
+        catch (Exception ex)
+        {
+            ReconnectLogger.Warning("Failed to delete ended host session file: " + ex.Message);
         }
     }
 
@@ -3187,7 +3223,20 @@ public sealed class ReconnectController : MonoBehaviour
         pendingLobbySettings = CaptureCurrentLobbySettings();
         PrepareRuntimeStateForRestore();
         ResetPlayerEffectHud();
-        NetworkManager.singleton.StopHost();
+        restoreHostRestartInProgress = true;
+        try
+        {
+            NetworkManager.singleton.StopHost();
+        }
+        catch (Exception ex)
+        {
+            restoreHostRestartInProgress = false;
+            statusLine = "恢复失败：停止主机失败。";
+            ReconnectLogger.Error("Restore failed while stopping host: " + ex);
+            ShowSystemMessage(statusLine);
+            yield break;
+        }
+
         yield return null;
         yield return new WaitForSeconds(1f);
         ResetPlayerEffectHud();
@@ -3198,14 +3247,37 @@ public sealed class ReconnectController : MonoBehaviour
         ReconnectLogger.Info("Restore save load results. profile=" + loadedProfile + " tmp=" + loadedTmp + " selectedProfile=" + selectedProfile);
         if (!loadedProfile || !loadedTmp)
         {
-            statusLine = "恢复失败：无法重新载入检查点存档。";
             ReconnectLogger.Error("Restore failed because save reload failed. profile=" + loadedProfile + " tmp=" + loadedTmp);
-            ShowSystemMessage(statusLine);
+            AbortRestoreAfterHostStopped("restore-load-failed", "恢复失败：无法重新载入检查点存档。");
             yield break;
         }
 
         statusLine = "正在重启主机并回到检查点楼层……";
-        NetworkManager.singleton.StartHost();
+        try
+        {
+            NetworkManager.singleton.StartHost();
+        }
+        catch (Exception ex)
+        {
+            ReconnectLogger.Error("Restore failed while starting host: " + ex);
+            AbortRestoreAfterHostStopped("restore-start-host-failed", "恢复失败：重启主机失败。");
+            yield break;
+        }
+
+        float hostStartDeadline = Time.unscaledTime + 1f;
+        while (!NetworkServer.active && Time.unscaledTime < hostStartDeadline)
+        {
+            yield return null;
+        }
+
+        if (!NetworkServer.active)
+        {
+            ReconnectLogger.Error("Restore failed because host did not become active after StartHost.");
+            AbortRestoreAfterHostStopped("restore-start-host-inactive", "恢复失败：主机未能进入联机状态。");
+            yield break;
+        }
+
+        restoreHostRestartInProgress = false;
         ReconnectLogger.Warning("Restore coroutine started host. checkpoint=" + checkpointId + " serverPlayerIndex=" + HorayNetworkManager.serverPlayerIndex);
         yield return new WaitForSeconds(1f);
         OpenReconnectJoinWindow("restore-host-started");
@@ -3214,6 +3286,19 @@ public sealed class ReconnectController : MonoBehaviour
         statusLine = "已请求恢复到检查点：" + checkpointId;
         ReconnectLogger.Info("Restore coroutine completed. checkpoint=" + checkpointId + " hostSession=" + (hostSession != null) + " lobby=" + (hostSession?.LobbyId ?? 0));
         ShowSystemMessage("已请求恢复到检查点楼层。");
+    }
+
+    private void AbortRestoreAfterHostStopped(string reason, string message)
+    {
+        restoreHostRestartInProgress = false;
+        statusLine = message;
+        if (!NetworkServer.active)
+        {
+            ResetHostRuntimeState(reason, clearSession: true);
+            statusLine = message;
+        }
+
+        ShowSystemMessage(statusLine);
     }
 
     private bool TryRefreshCheckpointSnapshotFromCurrentRun(ReconnectCheckpointRecord checkpoint)

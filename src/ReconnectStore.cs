@@ -47,6 +47,11 @@ public sealed class ReconnectStore
         SaveJson(HostSessionPath, session);
     }
 
+    public void DeleteHostSession()
+    {
+        TryDeleteFile(HostSessionPath);
+    }
+
     public LastSessionRecord LoadLastSession()
     {
         return LoadJson<LastSessionRecord>(LastSessionPath, null);
