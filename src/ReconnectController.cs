@@ -2393,6 +2393,8 @@ public sealed class ReconnectController : MonoBehaviour
             hostSession.Members ??= new Dictionary<ulong, ReconnectMemberRecord>();
             hostSession.Checkpoints ??= new List<ReconnectCheckpointRecord>();
         }
+
+        RememberLobbyMaxMembers(lobby, "ensure-host-session");
     }
 
     private void DeleteEndedSessionCheckpoints()
@@ -2603,7 +2605,9 @@ public sealed class ReconnectController : MonoBehaviour
 
         try
         {
-            LobbyMemberData[] members = lobby.Manager.Lobby.Members;
+            LobbyData lobbyData = lobby.Manager.Lobby;
+            RememberLobbyMaxMembers(lobbyData.MaxMembers, "refresh-lobby-members");
+            LobbyMemberData[] members = lobbyData.Members;
             for (int i = 0; i < members.Length; i++)
             {
                 UserData user = members[i].user;
@@ -2687,6 +2691,7 @@ public sealed class ReconnectController : MonoBehaviour
         try
         {
             LobbyData lobbyData = lobby.Manager.Lobby;
+            RememberLobbyMaxMembers(lobbyData.MaxMembers, "publish-lobby-data");
             lobbyData["ReconnectMod"] = ProtocolVersion;
             lobbyData["ReconnectSessionId"] = hostSession.SessionId;
             lobbyData["ReconnectCheckpointId"] = hostSession.CurrentCheckpointId ?? "";
@@ -3500,6 +3505,7 @@ public sealed class ReconnectController : MonoBehaviour
             LobbyData data = lobby.Manager.Lobby;
             string chapter = data["Chapter"];
             RememberLobbyChapter(chapter, "capture-lobby-settings");
+            RememberLobbyMaxMembers(data.MaxMembers, "capture-lobby-settings");
             LobbySettingsSnapshot snapshot = new LobbySettingsSnapshot
             {
                 Name = data.Name,
@@ -3528,6 +3534,7 @@ public sealed class ReconnectController : MonoBehaviour
         try
         {
             LobbyData data = lobby.Manager.Lobby;
+            int targetMaxMembers = ResolveLobbyMaxMembersForRestore(pendingLobbySettings, out string maxMembersSource);
             if (config == null || config.ForceLobbyJoinableForReconnect)
             {
                 lobby.Manager.SetJoinable(makeJoinable: true);
@@ -3537,13 +3544,14 @@ public sealed class ReconnectController : MonoBehaviour
             {
                 string chapter = ResolveLobbyChapterForRestore("");
                 data.Type = ELobbyType.k_ELobbyTypePrivate;
-                data.MaxMembers = 4;
+                data.MaxMembers = targetMaxMembers;
                 data.GameVersion = Application.version;
                 data.Name = BuildFallbackLobbyName();
                 data["Chapter"] = chapter;
                 data.SetGameServer(UserData.Me.id);
                 RememberLobbyChapter(chapter, "apply-fallback-lobby-settings");
-                ReconnectLogger.Info("Applied fallback Steam lobby settings. " + DescribeLobby(lobby) + " name=" + NullToDash(data.Name) + " version=" + NullToDash(data.GameVersion) + " type=" + data.Type + " max=" + data.MaxMembers + " chapter=" + NullToDash(data["Chapter"]));
+                RememberLobbyMaxMembers(data.MaxMembers, "apply-fallback-lobby-settings");
+                ReconnectLogger.Info("Applied fallback Steam lobby settings. " + DescribeLobby(lobby) + " name=" + NullToDash(data.Name) + " version=" + NullToDash(data.GameVersion) + " type=" + data.Type + " max=" + data.MaxMembers + " maxSource=" + maxMembersSource + " chapter=" + NullToDash(data["Chapter"]));
                 return;
             }
 
@@ -3557,17 +3565,15 @@ public sealed class ReconnectController : MonoBehaviour
                 : pendingLobbySettings.GameVersion;
 
             data.Type = pendingLobbySettings.Type;
-            if (pendingLobbySettings.MaxMembers > 0)
-            {
-                data.MaxMembers = pendingLobbySettings.MaxMembers;
-            }
+            data.MaxMembers = targetMaxMembers;
 
             string restoredChapter = ResolveLobbyChapterForRestore(pendingLobbySettings.Chapter);
             data["Chapter"] = restoredChapter;
 
             data.SetGameServer(UserData.Me.id);
             RememberLobbyChapter(restoredChapter, "apply-restored-lobby-settings");
-            ReconnectLogger.Info("Restored Steam lobby settings. " + DescribeLobby(lobby) + " name=" + NullToDash(data.Name) + " version=" + NullToDash(data.GameVersion) + " type=" + data.Type + " max=" + data.MaxMembers + " chapter=" + NullToDash(data["Chapter"]));
+            RememberLobbyMaxMembers(data.MaxMembers, "apply-restored-lobby-settings");
+            ReconnectLogger.Info("Restored Steam lobby settings. " + DescribeLobby(lobby) + " name=" + NullToDash(data.Name) + " version=" + NullToDash(data.GameVersion) + " type=" + data.Type + " max=" + data.MaxMembers + " maxSource=" + maxMembersSource + " chapter=" + NullToDash(data["Chapter"]));
             pendingLobbySettings = null;
         }
         catch (Exception ex)
@@ -3693,6 +3699,142 @@ public sealed class ReconnectController : MonoBehaviour
         hostSession.LastKnownLobbyChapterRunIdentity = runIdentity;
         ReconnectLogger.Info("Cached Steam lobby chapter. source=" + source + " chapter=" + chapter + " session=" + Short(hostSession.SessionId));
         return true;
+    }
+
+    private bool RememberLobbyMaxMembers(LobbyInfo lobby, string source)
+    {
+        if (!lobby.HasLobby || lobby.Manager == null)
+        {
+            return false;
+        }
+
+        try
+        {
+            return RememberLobbyMaxMembers(lobby.Manager.Lobby.MaxMembers, source);
+        }
+        catch (Exception ex)
+        {
+            ReconnectLogger.Warning("Failed to cache Steam lobby max members. source=" + source + " error=" + ex.Message);
+            return false;
+        }
+    }
+
+    private bool RememberLobbyMaxMembers(int maxMembers, string source)
+    {
+        if (hostSession == null || maxMembers <= 0)
+        {
+            return false;
+        }
+
+        if (hostSession.LastKnownLobbyMaxMembers == maxMembers)
+        {
+            return false;
+        }
+
+        hostSession.LastKnownLobbyMaxMembers = maxMembers;
+        ReconnectLogger.Info("Cached Steam lobby max members. source=" + source + " raw=" + maxMembers + " applied=" + ClampLobbyMaxMembers(maxMembers) + " limit=" + GetMaxAllowedLobbyMembers() + " session=" + Short(hostSession.SessionId));
+        SaveHostSession();
+        return true;
+    }
+
+    private int ResolveLobbyMaxMembersForRestore(LobbySettingsSnapshot snapshot, out string source)
+    {
+        int inferred = InferLobbyMaxMembersFromSession();
+        if (snapshot != null && snapshot.MaxMembers > 0)
+        {
+            source = "captured-lobby";
+            return ClampLobbyMaxMembers(Mathf.Max(snapshot.MaxMembers, inferred));
+        }
+
+        if (hostSession != null && hostSession.LastKnownLobbyMaxMembers > 0)
+        {
+            source = "cached-session";
+            return ClampLobbyMaxMembers(Mathf.Max(hostSession.LastKnownLobbyMaxMembers, inferred));
+        }
+
+        int fallback = GetFallbackLobbyMaxMembers();
+        if (inferred > 0)
+        {
+            source = "inferred-session";
+            return ClampLobbyMaxMembers(Mathf.Max(inferred, fallback));
+        }
+
+        source = "config-default";
+        return fallback;
+    }
+
+    private int InferLobbyMaxMembersFromSession()
+    {
+        int candidate = 0;
+        int highestSlot = -1;
+
+        if (hostSession?.Members != null)
+        {
+            int knownMembers = 0;
+            foreach (ReconnectMemberRecord member in hostSession.Members.Values)
+            {
+                if (member == null || member.SteamId == 0 || member.State == ReconnectMemberState.Removed)
+                {
+                    continue;
+                }
+
+                knownMembers++;
+                if (member.PlayerSlot >= 0 && member.PlayerSlot > highestSlot)
+                {
+                    highestSlot = member.PlayerSlot;
+                }
+            }
+
+            candidate = Mathf.Max(candidate, knownMembers);
+        }
+
+        if (highestSlot >= 0)
+        {
+            candidate = Mathf.Max(candidate, highestSlot + 1);
+        }
+
+        if (PlayerSpawner.MultiplayerList != null)
+        {
+            int activeSpawners = 0;
+            foreach (PlayerSpawner spawner in PlayerSpawner.MultiplayerList)
+            {
+                if (spawner != null)
+                {
+                    activeSpawners++;
+                }
+            }
+
+            candidate = Mathf.Max(candidate, activeSpawners);
+        }
+
+        return candidate > 0 ? ClampLobbyMaxMembers(candidate) : 0;
+    }
+
+    private int GetFallbackLobbyMaxMembers()
+    {
+        int fallback = config == null ? new ReconnectConfig().FallbackLobbyMaxMembers : config.FallbackLobbyMaxMembers;
+        if (fallback <= 0)
+        {
+            fallback = new ReconnectConfig().FallbackLobbyMaxMembers;
+        }
+
+        return ClampLobbyMaxMembers(fallback);
+    }
+
+    private int GetMaxAllowedLobbyMembers()
+    {
+        int maxAllowed = config == null ? new ReconnectConfig().MaxAllowedLobbyMembers : config.MaxAllowedLobbyMembers;
+        if (maxAllowed <= 0)
+        {
+            maxAllowed = new ReconnectConfig().MaxAllowedLobbyMembers;
+        }
+
+        return Mathf.Max(1, maxAllowed);
+    }
+
+    private int ClampLobbyMaxMembers(int maxMembers)
+    {
+        return Mathf.Clamp(maxMembers, 1, GetMaxAllowedLobbyMembers());
     }
 
     private bool EnsureLobbyChapterCachedForRun(string source)
@@ -4475,6 +4617,7 @@ public sealed class ReconnectController : MonoBehaviour
             .Append(hostSession.RunId).Append('|')
             .Append(hostSession.LastKnownLobbyChapter).Append('|')
             .Append(hostSession.LastKnownLobbyChapterRunIdentity).Append('|')
+            .Append(hostSession.LastKnownLobbyMaxMembers).Append('|')
             .Append(hostSession.CurrentFloorId).Append('|')
             .Append(hostSession.CurrentCheckpointId).Append('|')
             .Append(hostSession.CurrentCheckpointHash).Append('|')

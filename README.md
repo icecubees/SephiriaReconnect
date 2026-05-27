@@ -2,7 +2,7 @@
 
 《Sephiria》原生 AddOn 断线重连 Mod。
 
-当前版本：`v0.1.13`
+当前版本：`v0.1.14`
 
 这个项目不是 BepInEx 插件，也不需要额外安装 BepInEx、Belnex 之类的加载器。Mod 使用游戏自带的 AddOn 加载方式；发布包内已经附带 `0Harmony.dll`，玩家不需要额外安装 Harmony。
 
@@ -37,6 +37,8 @@
 - 支持 Steam 邀请重连、定向邀请历史掉线成员、客户端加入上次房间。
 - 支持客户端自动握手：默认最多 3 次，间隔 15 秒，成功后停止。
 - 记录本局章节缓存，例如 `5-4`，恢复后尽量保持原 Steam lobby 章节。
+- 缓存并恢复 Steam lobby 最大人数；没有缓存时会按历史成员和最高槽位推导，再回退到配置默认值，并受可配置上限保护。
+- 对 `SephiriaUnlocker` 这类 16 人扩容 Mod 更友好：本层恢复后不再默认把重连 lobby 退回 4 人上限。
 - 使用 Unity UI 面板，不使用 IMGUI。
 - 左下角重连图标挂在原生 HUD 图标组后方，尺寸跟随原生图标。
 - 图标在过场、加载、HUD 隐藏时隐藏；原生面板打开时保持显示但禁用点击，尽量表现得像原版图标。
@@ -48,7 +50,7 @@
 下载 GitHub Releases 中的压缩包，例如：
 
 ```text
-SephiriaReconnect-v0.1.13.zip
+SephiriaReconnect-v0.1.14.zip
 ```
 
 游戏目录通常类似：
@@ -69,7 +71,7 @@ Steam\steamapps\common\Sephiria\AddOns
 Steam\steamapps\common\Sephiria\AddOns\SephiriaReconnect
 ```
 
-Release 压缩包里的顶层文件夹通常带版本号，例如 `SephiriaReconnect-v0.1.13`。安装时可以：
+Release 压缩包里的顶层文件夹通常带版本号，例如 `SephiriaReconnect-v0.1.14`。安装时可以：
 
 1. 把这个文件夹解压到 `AddOns` 下后重命名为 `SephiriaReconnect`。
 2. 或者手动创建 `AddOns\SephiriaReconnect`，再把压缩包内的文件复制进去。
@@ -157,7 +159,7 @@ assets
 - 打开 Steam 邀请窗口。
 - 尝试对历史掉线成员发送 Steam lobby 邀请。
 - 短时间允许地牢中加入。
-- 如果当前没有 Steam lobby，房主侧会尝试创建一个私密 lobby，默认最大人数为 4。
+- 如果当前没有 Steam lobby，房主侧会尝试创建一个私密 lobby。最大人数优先沿用本局缓存；没有缓存时按历史成员和最高槽位推导；仍无法推导时使用 `FallbackLobbyMaxMembers`，并受 `MaxAllowedLobbyMembers` 上限保护。
 
 如果面板没有历史掉线成员，仍会打开 Steam 邀请窗口，方便手动邀请好友。
 
@@ -244,7 +246,9 @@ Mod 发布到 Steam lobby 的重连数据包括：
 - `Chapter`
 - GameServer/owner 连接信息
 
-如果本层恢复或邀请流程发现没有 active lobby，房主侧会尝试创建新的私密 lobby，默认最大人数为 4。这个行为主要服务于重连窗口，不等同于完整支持“单机中途开房拉新玩家”。
+如果本层恢复或邀请流程发现没有 active lobby，房主侧会尝试创建新的私密 lobby。最大人数会按以下顺序决定：旧 lobby 缓存值、历史成员/最高槽位推导值、`FallbackLobbyMaxMembers` 配置值；最终再用 `MaxAllowedLobbyMembers` 做上限保护。这个行为主要服务于重连窗口，不等同于完整支持“单机中途开房拉新玩家”。
+
+对 16 人扩容类 Mod，例如 `SephiriaUnlocker`，建议保持 `MaxAllowedLobbyMembers` 为默认的 16。它负责提高 Mirror/Transport 连接数和多人数量选择器；本 Mod 负责在本层恢复重建 Steam lobby 时尽量沿用旧 lobby 的 `MaxMembers`。如果使用更高人数上限的扩容 Mod，需要同步调高 `MaxAllowedLobbyMembers`，并确认所有玩家安装环境一致。
 
 ## 配置
 
@@ -275,6 +279,8 @@ Sephiria\AddOns\SephiriaReconnect\config.json
   "ForceOpenInDungeonJoinForReconnect": true,
   "ForceLobbyJoinableForReconnect": true,
   "ReconnectJoinWindowSeconds": 180,
+  "FallbackLobbyMaxMembers": 4,
+  "MaxAllowedLobbyMembers": 16,
   "EnableFileLogging": true,
   "MaxLogFiles": 8,
   "MaxLogFileBytes": 1048576,
@@ -299,6 +305,8 @@ Sephiria\AddOns\SephiriaReconnect\config.json
 - `ForceOpenInDungeonJoinForReconnect`：重连窗口期间是否临时允许地牢中连接。
 - `ForceLobbyJoinableForReconnect`：重连窗口期间是否把 lobby 设为可加入。
 - `ReconnectJoinWindowSeconds`：重连窗口持续时间。
+- `FallbackLobbyMaxMembers`：没有旧 lobby 缓存、也无法从历史成员推导时，新建重连 lobby 使用的默认最大人数。
+- `MaxAllowedLobbyMembers`：重连 lobby 最大人数的上限保护，默认 16。使用扩容人数 Mod 时，如果超过 16，需要双方环境确认后再调高。
 - `EnableFileLogging`：是否写入 Mod 文件日志。
 - `IconGap` 和 `IconSize`：重连图标布局参数。通常不需要改。
 

@@ -16,6 +16,8 @@
   "ForceOpenInDungeonJoinForReconnect": true,
   "ForceLobbyJoinableForReconnect": true,
   "ReconnectJoinWindowSeconds": 180,
+  "FallbackLobbyMaxMembers": 4,
+  "MaxAllowedLobbyMembers": 16,
   "EnableFileLogging": true,
   "MaxLogFiles": 8,
   "MaxLogFileBytes": 1048576,

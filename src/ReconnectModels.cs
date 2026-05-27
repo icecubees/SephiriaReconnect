@@ -32,6 +32,8 @@ public sealed class ReconnectConfig
     public bool ForceOpenInDungeonJoinForReconnect = true;
     public bool ForceLobbyJoinableForReconnect = true;
     public int ReconnectJoinWindowSeconds = 180;
+    public int FallbackLobbyMaxMembers = 4;
+    public int MaxAllowedLobbyMembers = 16;
     public bool EnableFileLogging = true;
     public int MaxLogFiles = 8;
     public int MaxLogFileBytes = 1048576;
@@ -89,6 +91,7 @@ public sealed class ReconnectSessionRecord
     public string RunId;
     public string LastKnownLobbyChapter;
     public string LastKnownLobbyChapterRunIdentity;
+    public int LastKnownLobbyMaxMembers;
     public string CurrentFloorId;
     public string CurrentCheckpointId;
     public string CurrentCheckpointHash;
