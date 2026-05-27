@@ -76,6 +76,8 @@ public sealed class ReconnectCheckpointRecord
     public string SaveSlotId;
     public string LobbyChapter;
     public string LobbyChapterRunIdentity;
+    public int GenerationPlayerCount;
+    public int GenerationMaxLuck;
     public string SnapshotPath;
     public DateTime CreatedUtc;
 }

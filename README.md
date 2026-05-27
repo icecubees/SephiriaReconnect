@@ -2,7 +2,7 @@
 
 《Sephiria》原生 AddOn 断线重连 Mod。
 
-当前版本：`v0.1.14`
+当前版本：`v0.1.15`
 
 这个项目不是 BepInEx 插件，也不需要额外安装 BepInEx、Belnex 之类的加载器。Mod 使用游戏自带的 AddOn 加载方式；发布包内已经附带 `0Harmony.dll`，玩家不需要额外安装 Harmony。
 
@@ -50,7 +50,7 @@
 下载 GitHub Releases 中的压缩包，例如：
 
 ```text
-SephiriaReconnect-v0.1.14.zip
+SephiriaReconnect-v0.1.15.zip
 ```
 
 游戏目录通常类似：
@@ -71,7 +71,7 @@ Steam\steamapps\common\Sephiria\AddOns
 Steam\steamapps\common\Sephiria\AddOns\SephiriaReconnect
 ```
 
-Release 压缩包里的顶层文件夹通常带版本号，例如 `SephiriaReconnect-v0.1.14`。安装时可以：
+Release 压缩包里的顶层文件夹通常带版本号，例如 `SephiriaReconnect-v0.1.15`。安装时可以：
 
 1. 把这个文件夹解压到 `AddOns` 下后重命名为 `SephiriaReconnect`。
 2. 或者手动创建 `AddOns\SephiriaReconnect`，再把压缩包内的文件复制进去。
@@ -336,6 +336,7 @@ Sephiria\AddOns\SephiriaReconnect\logs
 
 - 恢复目标是楼层入口检查点，不是掉线瞬间状态。
 - 本层恢复会 StopHost 再 StartHost，成员连接会经历一次重建。
+- 本层恢复会让原版重新 `FloorAlloc` 当前楼层；Mod 会用检查点记录的在线人数和最高 Luck 修正 Lucky 房判定、怪物波次和多人难度缩放，但不会恢复掉线瞬间的场景对象。
 - 如果成员未安装 Mod，只能走原版 Steam 邀请路径，不会发送 Mod 握手。
 - 原版对“本局开始后新增玩家”的容错有限，本 Mod 主要面向原本参与过本局、掉线后回来的玩家。
 - 完全新玩家中途加入可能出现初始状态、槽位或同步数据不完整。

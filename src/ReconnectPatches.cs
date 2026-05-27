@@ -34,6 +34,7 @@ public static class ReconnectPatches
         ApplyFloorEntryPatch(harmony);
         ApplySteamInvitationPatch(harmony);
         ApplyPausePanelPatch(harmony);
+        ApplyFloorGenerationSnapshotPatch(harmony);
         patchesApplied = true;
     }
 
@@ -153,6 +154,52 @@ public static class ReconnectPatches
         }
     }
 
+    private static void ApplyFloorGenerationSnapshotPatch(Harmony harmony)
+    {
+        try
+        {
+            MethodInfo floorAllocTarget = AccessTools.Method(typeof(DungeonManager), "FloorAlloc", new[] { typeof(string) });
+            MethodInfo floorAllocPostfix = AccessTools.Method(typeof(ReconnectPatches), nameof(ApplyCheckpointGenerationSnapshotAfterFloorAlloc));
+            if (floorAllocTarget == null || floorAllocPostfix == null)
+            {
+                ReconnectLogger.Warning("FloorAlloc patch target was not found. Restored floors will use vanilla online PlayerSpawner state.");
+            }
+            else
+            {
+                harmony.Patch(floorAllocTarget, postfix: new HarmonyMethod(floorAllocPostfix));
+                ReconnectLogger.Info("Floor generation snapshot patch applied to DungeonManager.FloorAlloc().");
+            }
+
+            MethodInfo spawnDataTarget = AccessTools.Method(typeof(MonsterSpawnPhases), "GeneratePhaseData", new[] { typeof(int), typeof(int) });
+            MethodInfo spawnDataPrefix = AccessTools.Method(typeof(ReconnectPatches), nameof(UseCheckpointPlayerCountForMonsterPhase));
+            if (spawnDataTarget == null || spawnDataPrefix == null)
+            {
+                ReconnectLogger.Warning("Monster phase player-count patch target was not found. Restored monster counts will use vanilla online PlayerSpawner state.");
+            }
+            else
+            {
+                harmony.Patch(spawnDataTarget, prefix: new HarmonyMethod(spawnDataPrefix));
+                ReconnectLogger.Info("Monster phase player-count patch applied.");
+            }
+
+            MethodInfo monsterPoolTarget = AccessTools.Method(typeof(StageEntity), "GenerateMonsterSpawnData", new[] { typeof(int), typeof(string[]) });
+            MethodInfo monsterPoolPrefix = AccessTools.Method(typeof(ReconnectPatches), nameof(UseCheckpointPlayerCountForMonsterDifficulty));
+            if (monsterPoolTarget == null || monsterPoolPrefix == null)
+            {
+                ReconnectLogger.Warning("Monster difficulty patch target was not found. Restored monster pools will use vanilla online PlayerSpawner state.");
+            }
+            else
+            {
+                harmony.Patch(monsterPoolTarget, prefix: new HarmonyMethod(monsterPoolPrefix));
+                ReconnectLogger.Info("Monster difficulty patch applied to StageEntity.GenerateMonsterSpawnData().");
+            }
+        }
+        catch (Exception ex)
+        {
+            ReconnectLogger.Warning("Floor generation snapshot patch failed. Restored floors will use vanilla online PlayerSpawner state: " + ex);
+        }
+    }
+
     private static bool IsCmdSetDefaultPlayerDataUserCode(MethodInfo method)
     {
         if (method == null || !method.Name.StartsWith("UserCode_CmdSetDefaultPlayerData", StringComparison.Ordinal))
@@ -228,6 +275,21 @@ public static class ReconnectPatches
         }
 
         __instance.giveupButton.SetActive(true);
+    }
+
+    private static void ApplyCheckpointGenerationSnapshotAfterFloorAlloc(string guid)
+    {
+        ReconnectController.ApplyRestoreGenerationSnapshotToAllocatedFloor(guid);
+    }
+
+    private static void UseCheckpointPlayerCountForMonsterPhase(ref int multiplayerCount)
+    {
+        ReconnectController.OverrideMonsterPhasePlayerCount(ref multiplayerCount);
+    }
+
+    private static void UseCheckpointPlayerCountForMonsterDifficulty(ref int difficulty)
+    {
+        ReconnectController.OverrideMonsterSpawnDifficulty(ref difficulty);
     }
 
     private static bool IsActiveBackgroundInvite(SteamInvitation invitation, LobbyData lobby)

@@ -21,6 +21,11 @@ public sealed class ReconnectController : MonoBehaviour
     public const string ProtocolVersion = "sephiria-reconnect/0.1";
     public static ReconnectController Instance { get; private set; }
 
+    private static string restoreGenerationFloorGuid = "";
+    private static int restoreGenerationPlayerCount;
+    private static int restoreGenerationMaxLuck;
+    private static float restoreGenerationUntil;
+
     private ReconnectStore store;
     private ReconnectConfig config;
     private ReconnectSessionRecord hostSession;
@@ -128,6 +133,7 @@ public sealed class ReconnectController : MonoBehaviour
 
         DetachServerEvents();
         UnregisterMessageHandlers();
+        ClearRestoreGenerationOverride("controller-destroyed");
         DestroyUi();
         if (wasActiveInstance)
         {
@@ -155,6 +161,8 @@ public sealed class ReconnectController : MonoBehaviour
         {
             UpdateHudVisibility();
         }
+
+        TickRestoreGenerationOverride();
 
         if (Time.unscaledTime < nextProbeAt)
         {
@@ -2993,6 +3001,7 @@ public sealed class ReconnectController : MonoBehaviour
             }
 
             FloorData floor = FindFloor(floorGuid);
+            CaptureGenerationSnapshot(out int generationPlayerCount, out int generationMaxLuck);
             string checkpointId = DateTime.UtcNow.ToString("yyyyMMddHHmmss") + "-" + ShortGuid();
             string snapshotPath = store.GetCheckpointSavePath(checkpointId);
             SaveData snapshot = SaveManager.CurrentRun.Copy();
@@ -3013,6 +3022,8 @@ public sealed class ReconnectController : MonoBehaviour
                 SaveSlotId = hostSession.SaveSlotId,
                 LobbyChapter = lobbyChapter,
                 LobbyChapterRunIdentity = ExtractRunIdentity(hostSession.RunId),
+                GenerationPlayerCount = generationPlayerCount,
+                GenerationMaxLuck = generationMaxLuck,
                 SnapshotPath = snapshotPath,
                 CreatedUtc = DateTime.UtcNow
             };
@@ -3064,6 +3075,37 @@ public sealed class ReconnectController : MonoBehaviour
         SaveManager.CurrentRun.SetString("LastFloorGuid", floorGuid);
         UpsertDungeonEnvironmentValue("IsInDungeon", 1);
         ReconnectLogger.Info("Forced checkpoint run markers. floor=" + Short(floorGuid) + " runStarted=true IsInDungeon=1");
+    }
+
+    private static void CaptureGenerationSnapshot(out int playerCount, out int maxLuck)
+    {
+        playerCount = 0;
+        maxLuck = 0;
+
+        try
+        {
+            if (PlayerSpawner.MultiplayerList == null)
+            {
+                return;
+            }
+
+            playerCount = PlayerSpawner.MultiplayerList.Count;
+            foreach (PlayerSpawner spawner in PlayerSpawner.MultiplayerList)
+            {
+                if (spawner == null || spawner.PlayerAvatar == null)
+                {
+                    continue;
+                }
+
+                maxLuck = Mathf.Max(maxLuck, spawner.PlayerAvatar.GetCustomStat(ECustomStat.Luck));
+            }
+
+            ReconnectLogger.Info("Captured floor generation player snapshot. players=" + playerCount + " maxLuck=" + maxLuck);
+        }
+        catch (Exception ex)
+        {
+            ReconnectLogger.Warning("Failed to capture floor generation player snapshot: " + ex.Message);
+        }
     }
 
     private static void UpsertDungeonEnvironmentValue(string key, int value)
@@ -3258,6 +3300,7 @@ public sealed class ReconnectController : MonoBehaviour
         }
 
         statusLine = "正在重启主机并回到检查点楼层……";
+        BeginRestoreGenerationOverride(GetCurrentRestoreCheckpoint());
         try
         {
             NetworkManager.singleton.StartHost();
@@ -3296,6 +3339,7 @@ public sealed class ReconnectController : MonoBehaviour
     private void AbortRestoreAfterHostStopped(string reason, string message)
     {
         restoreHostRestartInProgress = false;
+        ClearRestoreGenerationOverride(reason);
         statusLine = message;
         if (!NetworkServer.active)
         {
@@ -3336,6 +3380,7 @@ public sealed class ReconnectController : MonoBehaviour
             checkpoint.CheckpointHash = ComputeSaveHash(SaveManager.CurrentRun);
             checkpoint.LobbyChapter = ResolveLobbyChapterForCheckpoint();
             checkpoint.LobbyChapterRunIdentity = ExtractRunIdentity(hostSession?.RunId);
+            CaptureGenerationSnapshot(out checkpoint.GenerationPlayerCount, out checkpoint.GenerationMaxLuck);
             if (hostSession != null && hostSession.CurrentCheckpointId == checkpoint.CheckpointId)
             {
                 hostSession.CurrentCheckpointHash = checkpoint.CheckpointHash;
@@ -3653,6 +3698,150 @@ public sealed class ReconnectController : MonoBehaviour
         }
 
         return hostSession.Checkpoints.LastOrDefault(c => c != null && c.CheckpointId == hostSession.CurrentCheckpointId);
+    }
+
+    private static void BeginRestoreGenerationOverride(ReconnectCheckpointRecord checkpoint)
+    {
+        ClearRestoreGenerationOverride("begin-new-restore");
+        if (checkpoint == null || checkpoint.GenerationPlayerCount <= 0 || string.IsNullOrEmpty(checkpoint.FloorGuid))
+        {
+            ReconnectLogger.Info("Restore generation snapshot unavailable; vanilla PlayerSpawner state will be used for floor generation.");
+            return;
+        }
+
+        restoreGenerationFloorGuid = checkpoint.FloorGuid;
+        restoreGenerationPlayerCount = Mathf.Max(1, checkpoint.GenerationPlayerCount);
+        restoreGenerationMaxLuck = Mathf.Max(0, checkpoint.GenerationMaxLuck);
+        restoreGenerationUntil = Time.unscaledTime + 45f;
+        ReconnectLogger.Info("Enabled checkpoint floor generation snapshot. floor=" + Short(restoreGenerationFloorGuid) +
+            " players=" + restoreGenerationPlayerCount +
+            " maxLuck=" + restoreGenerationMaxLuck +
+            " checkpoint=" + Short(checkpoint.CheckpointId));
+    }
+
+    private static void TickRestoreGenerationOverride()
+    {
+        if (!HasRestoreGenerationOverride())
+        {
+            return;
+        }
+
+        try
+        {
+            FloorGenerator floor = FloorGenerator.FindByGuid(restoreGenerationFloorGuid);
+            if (floor != null && floor.GenerateSuccess)
+            {
+                ClearRestoreGenerationOverride("floor-generated");
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private static bool HasRestoreGenerationOverride()
+    {
+        if (restoreGenerationPlayerCount <= 0 || string.IsNullOrEmpty(restoreGenerationFloorGuid))
+        {
+            return false;
+        }
+
+        if (restoreGenerationUntil > 0f && Time.unscaledTime > restoreGenerationUntil)
+        {
+            ClearRestoreGenerationOverride("expired");
+            return false;
+        }
+
+        return true;
+    }
+
+    private static void ClearRestoreGenerationOverride(string reason)
+    {
+        if (restoreGenerationPlayerCount > 0 || !string.IsNullOrEmpty(restoreGenerationFloorGuid))
+        {
+            ReconnectLogger.Info("Cleared checkpoint floor generation snapshot. reason=" + reason +
+                " floor=" + Short(restoreGenerationFloorGuid) +
+                " players=" + restoreGenerationPlayerCount +
+                " maxLuck=" + restoreGenerationMaxLuck);
+        }
+
+        restoreGenerationFloorGuid = "";
+        restoreGenerationPlayerCount = 0;
+        restoreGenerationMaxLuck = 0;
+        restoreGenerationUntil = 0f;
+    }
+
+    internal static void ApplyRestoreGenerationSnapshotToAllocatedFloor(string floorGuid)
+    {
+        if (!HasRestoreGenerationOverride() || string.IsNullOrEmpty(floorGuid) || !string.Equals(floorGuid, restoreGenerationFloorGuid, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        try
+        {
+            FloorGenerator floor = FloorGenerator.FindByGuid(floorGuid);
+            if (floor == null)
+            {
+                return;
+            }
+
+            int luckyType = ComputeLuckyType(floor.seed, restoreGenerationMaxLuck);
+            if (floor.luckyType != luckyType)
+            {
+                floor.NetworkluckyType = luckyType;
+                ReconnectLogger.Info("Applied checkpoint Lucky snapshot to restored floor. floor=" + Short(floorGuid) +
+                    " seed=" + floor.seed +
+                    " maxLuck=" + restoreGenerationMaxLuck +
+                    " luckyType=" + luckyType);
+            }
+        }
+        catch (Exception ex)
+        {
+            ReconnectLogger.Warning("Failed to apply checkpoint Lucky snapshot to restored floor: " + ex.Message);
+        }
+    }
+
+    internal static void OverrideMonsterPhasePlayerCount(ref int multiplayerCount)
+    {
+        if (!HasRestoreGenerationOverride())
+        {
+            return;
+        }
+
+        multiplayerCount = restoreGenerationPlayerCount;
+    }
+
+    internal static void OverrideMonsterSpawnDifficulty(ref int difficulty)
+    {
+        if (!HasRestoreGenerationOverride())
+        {
+            return;
+        }
+
+        int actualCount = PlayerSpawner.MultiplayerList == null ? 0 : PlayerSpawner.MultiplayerList.Count;
+        int delta = GetMultiplayerDifficultyBonus(restoreGenerationPlayerCount) - GetMultiplayerDifficultyBonus(actualCount);
+        if (delta != 0)
+        {
+            difficulty += delta;
+        }
+    }
+
+    private static int ComputeLuckyType(int seed, int maxLuck)
+    {
+        int luck = Mathf.Min(Mathf.Max(0, maxLuck), 20);
+        double threshold = 4.0 + (double)luck * 0.05;
+        return new System.Random(seed).NextDouble() * 100.0 < threshold ? 1 : 0;
+    }
+
+    private static int GetMultiplayerDifficultyBonus(int playerCount)
+    {
+        if (playerCount > 3)
+        {
+            return 2;
+        }
+
+        return playerCount > 1 ? 1 : 0;
     }
 
     private string GetCachedLobbyChapter()
@@ -4634,6 +4823,8 @@ public sealed class ReconnectController : MonoBehaviour
                 .Append(checkpoint.SaveSlotId).Append('|')
                 .Append(checkpoint.LobbyChapter).Append('|')
                 .Append(checkpoint.LobbyChapterRunIdentity).Append('|')
+                .Append(checkpoint.GenerationPlayerCount).Append('|')
+                .Append(checkpoint.GenerationMaxLuck).Append('|')
                 .Append(checkpoint.CreatedUtc.Ticks);
         }
 
@@ -4989,6 +5180,8 @@ public sealed class ReconnectController : MonoBehaviour
             " run=" + NullToDash(checkpoint.RunId) +
             " slot=" + NullToDash(checkpoint.SaveSlotId) +
             " chapter=" + NullToDash(checkpoint.LobbyChapter) +
+            " genPlayers=" + checkpoint.GenerationPlayerCount +
+            " genLuck=" + checkpoint.GenerationMaxLuck +
             " hash=" + Short(checkpoint.CheckpointHash);
     }
 
