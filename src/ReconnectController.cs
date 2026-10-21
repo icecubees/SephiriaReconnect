@@ -21,6 +21,9 @@ public sealed class ReconnectController : MonoBehaviour
     public const string ProtocolVersion = "sephiria-reconnect/0.1";
     public static ReconnectController Instance { get; private set; }
 
+    internal static bool IsReconnectJoinWindowOpen =>
+        Instance != null && Instance.reconnectJoinWindowOpen;
+
     private static string restoreGenerationFloorGuid = "";
     private static int restoreGenerationPlayerCount;
     private static int restoreGenerationMaxLuck;
@@ -91,6 +94,8 @@ public sealed class ReconnectController : MonoBehaviour
     private static readonly Vector3[] ScreenRectCorners = new Vector3[4];
     private static readonly MethodInfo DungeonSaveCurrentSessionDataMethod =
         typeof(DungeonManager).GetMethod("SaveCurrentSessionData", BindingFlags.Instance | BindingFlags.NonPublic);
+    private static readonly PropertyInfo PlayerShieldDamageProperty =
+        typeof(PlayerAvatar).GetProperty("NetworkreceivedShieldDamage", BindingFlags.Instance | BindingFlags.Public);
 
     private void Awake()
     {
@@ -2192,7 +2197,6 @@ public sealed class ReconnectController : MonoBehaviour
         }
 
         HorayNetworkAuthenticator.allowConnection = true;
-        HorayNetworkAuthenticator.AccessDeny_InDungeon = false;
         float seconds = Mathf.Max(30, config.ReconnectJoinWindowSeconds);
         float until = Time.unscaledTime + seconds;
         if (until > reconnectConnectionOpenUntil)
@@ -2216,7 +2220,6 @@ public sealed class ReconnectController : MonoBehaviour
         }
 
         HorayNetworkAuthenticator.allowConnection = true;
-        HorayNetworkAuthenticator.AccessDeny_InDungeon = false;
     }
 
     private void CloseReconnectJoinWindow()
@@ -2227,9 +2230,6 @@ public sealed class ReconnectController : MonoBehaviour
         }
 
         HorayNetworkAuthenticator.allowConnection = reconnectPreviousAllowConnection;
-        HorayNetworkAuthenticator.AccessDeny_InDungeon = ShouldDenyJoinBecauseInDungeon()
-            ? true
-            : reconnectPreviousAccessDenyInDungeon;
         reconnectJoinWindowOpen = false;
         reconnectConnectionOpenUntil = 0f;
         RestoreLobbyJoinableAfterReconnectWindow();
@@ -4280,7 +4280,11 @@ public sealed class ReconnectController : MonoBehaviour
         avatar.SetMoney(0);
         avatar.NetworkreservedMp = 0;
         avatar.NetworkreceivedDamage = 0f;
-        avatar.NetworkreceivedShieldDamage = 0f;
+        if (PlayerShieldDamageProperty != null && PlayerShieldDamageProperty.CanWrite)
+        {
+            PlayerShieldDamageProperty.SetValue(avatar, 0f);
+        }
+
         avatar.ClearOrphanedStatusInstance();
     }
 
@@ -4369,7 +4373,7 @@ public sealed class ReconnectController : MonoBehaviour
                 return;
             }
 
-            LobbyData lobby = LobbyData.Get(lastSession.LobbyId.ToString());
+            LobbyData lobby = LobbyData.Get(lastSession.LobbyId);
             StartCoroutine(JoinLastLobbyCoroutine(lobbyManager, lobby));
             statusLine = "正在返回上次房间：" + lastSession.LobbyId;
         }

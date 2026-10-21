@@ -31,6 +31,7 @@ public static class ReconnectPatches
         }
 
         ApplyPlayerSlotPatch(harmony);
+        ApplyAccessDenyInDungeonPatch(harmony);
         ApplyFloorEntryPatch(harmony);
         ApplySteamInvitationPatch(harmony);
         ApplyPausePanelPatch(harmony);
@@ -63,6 +64,36 @@ public static class ReconnectPatches
         catch (Exception ex)
         {
             ReconnectLogger.Warning("Player slot patch failed. UI and reconnect session logic will still load: " + ex);
+        }
+    }
+
+    private static void ApplyAccessDenyInDungeonPatch(Harmony harmony)
+    {
+        try
+        {
+            MethodInfo target = AccessTools.PropertyGetter(typeof(HorayNetworkAuthenticator), "AccessDeny_InDungeon");
+            MethodInfo postfix = AccessTools.Method(typeof(ReconnectPatches), nameof(ForceAllowJoinDuringReconnectWindow));
+
+            if (target == null || postfix == null)
+            {
+                ReconnectLogger.Warning("AccessDeny_InDungeon patch target was not found. Reconnect joins inside a dungeon may be rejected.");
+                return;
+            }
+
+            harmony.Patch(target, postfix: new HarmonyMethod(postfix));
+            ReconnectLogger.Info("AccessDeny_InDungeon patch applied.");
+        }
+        catch (Exception ex)
+        {
+            ReconnectLogger.Warning("AccessDeny_InDungeon patch failed. Reconnect joins inside a dungeon may be rejected: " + ex);
+        }
+    }
+
+    private static void ForceAllowJoinDuringReconnectWindow(ref bool __result)
+    {
+        if (__result && ReconnectController.IsReconnectJoinWindowOpen)
+        {
+            __result = false;
         }
     }
 
